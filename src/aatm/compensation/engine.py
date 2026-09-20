@@ -15,7 +15,7 @@ compensation" in v1.
 from __future__ import annotations
 
 from typing import Any, Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from ..adapters.registry import AdapterRegistry
 from ..enums import (
@@ -23,7 +23,6 @@ from ..enums import (
     AuditEvent,
     CompensationSource,
     CompensationStrategy,
-    IntentStatus,
     Outcome,
     WALStatus,
 )
@@ -31,8 +30,6 @@ from ..models import (
     ActionIntent,
     CompensationExecution,
     CompensationPlan,
-    StepExecution,
-    VerificationResult,
 )
 from ..storage.audit_log import AuditLog
 from ..storage.wal import WriteAheadLog
@@ -215,7 +212,6 @@ class CompensationEngine:
                 query = await adapter.query_status(comp_intent.intent_id)
                 if query.found and query.outcome == Outcome.SUCCESS:
                     result_data = query.data
-                    outcome = Outcome.SUCCESS
                 else:
                     self.wal.update_status(comp_intent.intent_id, WALStatus.UNKNOWN,
                                            outcome="unknown")
@@ -231,7 +227,6 @@ class CompensationEngine:
                 continue
             else:
                 result_data = result.data
-                outcome = Outcome.SUCCESS
 
             # Verify compensation postcondition.
             verification = await adapter.verify_postcondition(

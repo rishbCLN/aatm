@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..models import ActionIntent, PlannedStep, VerificationResult
+from ..models import PlannedStep, VerificationResult
 from .expressions import evaluate
 
 

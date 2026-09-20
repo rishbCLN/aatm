@@ -17,7 +17,6 @@ from typing import Any, Optional
 import yaml
 
 try:  # jsonschema is a hard dependency, but degrade gracefully if missing.
-    import jsonschema
     from jsonschema import Draft7Validator, RefResolver
 
     _HAS_JSONSCHEMA = True

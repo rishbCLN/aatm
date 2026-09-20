@@ -80,8 +80,8 @@ def test_cli_audit_tamper_detected(cli_config, capsys):
     rc = cli_main(["run", _wf("travel_booking.yaml"), "--fast", "--no-color"])
     out = capsys.readouterr().out
     assert rc == 0
-    run_id = next(l.split(":", 1)[1].strip() for l in out.splitlines()
-                  if l.startswith("RUN_ID:"))
+    run_id = next(line.split(":", 1)[1].strip() for line in out.splitlines()
+                  if line.startswith("RUN_ID:"))
 
     audit_path = cli_config.audit_log_path(run_id)
     # Tamper: flip a payload field on a middle line.
@@ -106,8 +106,8 @@ def test_cli_crash_then_recover(cli_config, capsys):
                    "--no-color"])
     out = capsys.readouterr().out
     assert rc == 3  # crash exit code
-    run_id = next(l.split(":", 1)[1].strip() for l in out.splitlines()
-                  if l.startswith("RUN_ID:"))
+    run_id = next(line.split(":", 1)[1].strip() for line in out.splitlines()
+                  if line.startswith("RUN_ID:"))
 
     rc2 = cli_main(["recover", "--run-id", run_id])
     out2 = capsys.readouterr().out

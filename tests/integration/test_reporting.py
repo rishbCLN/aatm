@@ -10,14 +10,12 @@ import pytest
 from aatm.adapters import AdapterRegistry, FailureInjector, FailureRule
 from aatm.enums import ReportStatus, WorkflowState
 from aatm.planner import SagaPlanner, WorkflowParser
-from aatm.reporting import EvidenceReport, Scorer
+from aatm.reporting import EvidenceReport
 from aatm.runtime import TransactionCoordinator
-from aatm.storage.audit_log import AuditLog
 
 pytestmark = pytest.mark.asyncio
 
 try:
-    import jsonschema
     _HAS_JSONSCHEMA = True
 except Exception:
     _HAS_JSONSCHEMA = False

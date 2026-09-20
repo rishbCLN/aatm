@@ -7,7 +7,6 @@ All state lives in the shared :class:`MockWorldState`. These are Tier-2
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 from ..enums import Outcome
 from ..models import ActionIntent, ToolResult, VerificationResult

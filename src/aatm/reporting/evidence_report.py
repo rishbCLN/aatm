@@ -13,7 +13,6 @@ compliance, zero risk, or true rollback of irreversible actions.
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -21,9 +20,8 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .. import BUILD_VERSION
 from ..config import AATMConfig, default_config
-from ..enums import Outcome, ReportStatus, WorkflowState
+from ..enums import WorkflowState
 from ..models import RunResult, WorkflowRun, utcnow
-from ..planner.reversibility import ReversibilityClassifier
 from ..storage.audit_log import AuditLog
 from .explainer import RecoveryExplainer
 from .scoring import Scorer
@@ -185,11 +183,13 @@ class EvidenceReport:
         for s in plan.steps:
             inventory.append({
                 "step_id": s.step_id,
+                "name": s.name,
                 "tool": s.tool_name,
                 "tier": int(s.tier),
                 "reversibility": str(s.reversibility),
                 "side_effect_scope": str(s.side_effect_scope),
                 "risk_level": str(s.risk_level),
+                "depends_on": list(s.depends_on),
                 "is_pivot": s.is_pivot,
                 "is_post_pivot": s.is_post_pivot,
                 "approval_required": s.approval_required,

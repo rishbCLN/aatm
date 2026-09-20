@@ -22,18 +22,15 @@ from ..config import AATMConfig, default_config
 from ..enums import (
     ApprovalState,
     AuditEvent,
-    CompensationStrategy,
     FailureClass,
     IntentStatus,
     Outcome,
-    RiskLevel,
     Tier,
     WALStatus,
     WorkflowState,
 )
 from ..models import (
     ActionIntent,
-    CompensationExecution,
     SagaPlan,
     StepExecution,
     WorkflowRun,
@@ -48,8 +45,8 @@ from ..storage.idempotency import IdempotencyStore
 from ..storage.wal import WriteAheadLog
 from ..verification.post_conditions import PostconditionVerifier
 from ..adapters.failures import CrashSignal
-from .circuit_breaker import BreakerState, CircuitBreaker
-from .retry import backoff_delay_ms, is_retryable, sleep_backoff
+from .circuit_breaker import CircuitBreaker
+from .retry import is_retryable, sleep_backoff
 
 
 # Approval callback: given a step, return True to grant, False to deny.
@@ -655,7 +652,6 @@ class TransactionCoordinator:
 
         ordered = engine.plan_compensations(self._completed)
 
-        any_failed = False
         any_inconsistent = False
         for action in ordered:
             record = await engine.execute_compensation(action)
@@ -663,11 +659,9 @@ class TransactionCoordinator:
             self.metrics.incr("compensations_executed")
             if record.outcome == Outcome.FAILURE:
                 self.metrics.incr("compensations_failed")
-                if record.strategy == CompensationStrategy.MANUAL_ESCALATION:
-                    any_inconsistent = True
-                else:
-                    any_failed = True
-                    any_inconsistent = True
+                # Any failed compensation (manual-escalation or otherwise) means
+                # the run cannot be declared clean -> surface as INCONSISTENT.
+                any_inconsistent = True
                 # Durably record the unrecoverable compensation so an operator
                 # can drain it later instead of it being silently lost.
                 self.dead_letter.append(DeadLetterEntry(

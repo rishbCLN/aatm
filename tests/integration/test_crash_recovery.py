@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from aatm.adapters import AdapterRegistry, CrashSignal, FailureInjector, FailureRule
-from aatm.enums import WALStatus, WorkflowState
+from aatm.enums import WALStatus
 from aatm.planner import SagaPlanner, WorkflowParser
 from aatm.runtime import RecoveryManager, TransactionCoordinator
 
@@ -38,7 +38,7 @@ async def test_crash_after_payment_then_recover_no_duplicate(tmp_config):
         FailureRule(mode="crash", tool="charge_payment", phase="after")
     ])
     reg = AdapterRegistry(injector=injector, world_persist_path=world_path)
-    coord = TransactionCoordinator(plan_and_reg := _plan(tmp_config), reg,
+    coord = TransactionCoordinator(_plan(tmp_config), reg,
                                    config=tmp_config, run_id=run_id,
                                    backoff_scale=0.0)
     try:

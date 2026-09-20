@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-import pytest
 
 from aatm.enums import WALStatus
 from aatm.models import ActionIntent

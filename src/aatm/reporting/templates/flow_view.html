@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AATM Flow &amp; Breaking Analysis - {{ model.result.run_id }}</title>
+  <style>
+    :root {
+      --bg:#0f1419; --panel:#1a212b; --panel2:#232c38; --fg:#e6edf3; --muted:#93a1b0;
+      --ok:#2ea043; --warn:#d29922; --bad:#f85149; --accent:#58a6ff; --line:#30363d;
+      --comp:#a371f7; --pivot:#f85149;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--fg);
+      font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; line-height:1.5; }
+    .wrap { max-width:1200px; margin:0 auto; padding:28px 20px 80px; }
+    h1 { font-size:22px; margin:0 0 4px; }
+    h2 { font-size:17px; margin:28px 0 10px; border-bottom:1px solid var(--line); padding-bottom:6px; }
+    .sub { color:var(--muted); font-size:13px; }
+    code { background:var(--panel2); padding:1px 5px; border-radius:4px; font-size:12px; }
+
+    /* Breaking analysis banner */
+    .analysis { border-radius:10px; padding:18px 20px; margin:18px 0; border:1px solid var(--line); }
+    .analysis.broke { background:rgba(248,81,73,.08); border-color:var(--bad); }
+    .analysis.ok { background:rgba(46,160,67,.08); border-color:var(--ok); }
+    .analysis h3 { margin:0 0 8px; font-size:18px; }
+    .analysis.broke h3 { color:var(--bad); } .analysis.ok h3 { color:var(--ok); }
+    .arow { display:flex; gap:10px; padding:5px 0; font-size:14px; }
+    .arow .lbl { color:var(--muted); min-width:150px; }
+    .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; font-weight:600; }
+    .pill.pre { background:rgba(88,166,255,.15); color:var(--accent); border:1px solid var(--accent); }
+    .pill.post { background:rgba(210,153,34,.15); color:var(--warn); border:1px solid var(--warn); }
+
+    /* Flow diagram */
+    .flow { display:flex; align-items:stretch; gap:0; overflow-x:auto; padding:18px 4px;
+      background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+    .col { display:flex; align-items:center; }
+    .node { position:relative; min-width:160px; max-width:180px; background:var(--panel2);
+      border:2px solid var(--line); border-radius:10px; padding:10px 12px; cursor:pointer;
+      transition:transform .08s, box-shadow .08s; }
+    .node:hover { transform:translateY(-2px); box-shadow:0 4px 14px rgba(0,0,0,.4); }
+    .node.success { border-color:var(--ok); }
+    .node.failure { border-color:var(--bad); box-shadow:0 0 0 3px rgba(248,81,73,.25); }
+    .node.unknown { border-color:var(--warn); }
+    .node.compensated { border-color:var(--comp); }
+    .node.not_reached { border-color:var(--line); opacity:.5; }
+    .node.pending { border-color:var(--muted); }
+    .node.is-break { outline:3px dashed var(--bad); outline-offset:3px; }
+    .node .sid { font-size:11px; color:var(--muted); }
+    .node .nm { font-size:13px; font-weight:600; margin:2px 0; }
+    .node .tool { font-size:11px; color:var(--accent); font-family:ui-monospace,Consolas,monospace; }
+    .node .tags { margin-top:6px; display:flex; flex-wrap:wrap; gap:4px; }
+    .tag { font-size:10px; padding:1px 6px; border-radius:4px; }
+    .tag.t0 { background:#2b333d; color:var(--muted); } .tag.t1 { background:rgba(46,160,67,.2); color:var(--ok); }
+    .tag.t2 { background:rgba(88,166,255,.2); color:var(--accent); } .tag.t3 { background:rgba(248,81,73,.2); color:var(--bad); }
+    .tag.st { background:#2b333d; color:var(--fg); }
+    .tag.pivot { background:var(--pivot); color:#fff; }
+    .tag.post { background:var(--warn); color:#000; }
+    .conn { display:flex; align-items:center; color:var(--muted); font-size:20px; padding:0 8px; }
+    .pivotbar { align-self:stretch; width:0; border-left:2px dashed var(--pivot); margin:0 10px;
+      position:relative; }
+    .pivotbar::after { content:"PIVOT"; position:absolute; top:-6px; left:50%; transform:translateX(-50%);
+      background:var(--pivot); color:#fff; font-size:10px; font-weight:700; padding:1px 6px;
+      border-radius:4px; white-space:nowrap; }
+
+    .legend { display:flex; flex-wrap:wrap; gap:14px; margin:12px 0; font-size:12px; color:var(--muted); }
+    .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:3px;
+      margin-right:5px; vertical-align:middle; }
+    .lg-ok::before { background:var(--ok); } .lg-bad::before { background:var(--bad); }
+    .lg-unk::before { background:var(--warn); } .lg-comp::before { background:var(--comp); }
+    .lg-nr::before { background:var(--line); }
+
+    /* Detail drawer */
+    .drawer { position:fixed; top:0; right:0; width:360px; max-width:90vw; height:100%;
+      background:var(--panel); border-left:1px solid var(--line); padding:20px; overflow-y:auto;
+      transform:translateX(100%); transition:transform .2s; box-shadow:-8px 0 24px rgba(0,0,0,.4); }
+    .drawer.open { transform:translateX(0); }
+    .drawer h3 { margin:0 0 10px; }
+    .drawer .close { position:absolute; top:12px; right:14px; cursor:pointer; color:var(--muted);
+      font-size:20px; background:none; border:none; }
+    .kv { display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px dashed var(--line);
+      font-size:13px; gap:10px; }
+    .kv .k { color:var(--muted); } .kv .v { text-align:right; word-break:break-word; }
+    .disclaimer { background:rgba(210,153,34,.08); border:1px solid var(--warn); border-radius:6px;
+      padding:10px 12px; font-size:12px; color:var(--warn); margin:16px 0; }
+    .muted { color:var(--muted); } .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+    pre { background:var(--panel2); padding:12px; border-radius:6px; overflow-x:auto; font-size:12px;
+      white-space:pre-wrap; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  {% set a = model.analysis %}
+  {% set r = model.result %}
+  <h1>AATM Flow &amp; Breaking Analysis</h1>
+  <div class="sub">
+    {{ r.workflow_name }} &middot; run <code>{{ r.run_id }}</code>
+    &middot; final state <strong>{{ r.state }}</strong>
+    {% if model.meta.generated_at %}&middot; generated {{ model.meta.generated_at }}{% endif %}
+  </div>
+
+  <!-- Breaking analysis -->
+  <div class="analysis {{ 'broke' if a.broke else 'ok' }}">
+    <h3>{{ a.headline }}</h3>
+    {% if a.broke %}
+      <div class="arow"><span class="lbl">Break point</span>
+        <span><code>{{ a.break_step }}</code> &middot; <code>{{ a.break_tool }}</code>
+          (Tier {{ a.break_tier }})</span></div>
+      <div class="arow"><span class="lbl">Relative to pivot</span>
+        <span class="pill {{ 'post' if a.phase == 'post-pivot' else 'pre' }}">{{ a.phase }}</span></div>
+      <div class="arow"><span class="lbl">What happened</span><span>{{ a.detail }}</span></div>
+      <div class="arow"><span class="lbl">Root cause</span><span>{{ a.root_cause }}</span></div>
+      <div class="arow"><span class="lbl">Suggested fix</span><span>{{ a.suggested_fix }}</span></div>
+      <div class="arow"><span class="lbl">Recovery taken</span>
+        <span>{{ a.recovery_mode }}
+          {% if a.recovery_mode != 'none' %}
+            &middot; <span class="{{ 'ok' if a.recovery_ok else 'bad' }}">
+              {{ 'succeeded' if a.recovery_ok else 'INCOMPLETE' }}</span>{% endif %}</span></div>
+      {% if a.uncompensated %}
+      <div class="arow"><span class="lbl">Uncompensated effects</span>
+        <span class="warn">{{ a.uncompensated | join(', ') }}
+          <span class="muted">(may be intentional forward-recovery outcomes)</span></span></div>
+      {% endif %}
+      {% if a.residual_risks %}
+      <div class="arow"><span class="lbl">Residual risk</span>
+        <span>{{ a.residual_risks | join('; ') }}</span></div>
+      {% endif %}
+    {% else %}
+      <div class="arow"><span class="lbl">Recovery</span><span>None required.</span></div>
+    {% endif %}
+  </div>
+
+  <!-- Flow diagram -->
+  <h2>Tool-call flow</h2>
+  <div class="legend">
+    <span class="lg-ok">success</span>
+    <span class="lg-bad">failure (break)</span>
+    <span class="lg-unk">unknown &rarr; reconciled</span>
+    <span class="lg-comp">compensated / rolled back</span>
+    <span class="lg-nr">not reached</span>
+  </div>
+  <div class="flow" id="flow"></div>
+  <p class="sub">Click any step to inspect its execution detail. Compensation is a
+    semantic forward action (reverse completion order), not a physical undo.</p>
+
+  <div class="disclaimer">
+    Analysis is derived from the recorded execution trace (WAL + audit + world
+    state). It reports observed engineering behavior, not a guarantee of zero risk
+    or true rollback of irreversible actions.
+  </div>
+</div>
+
+<!-- Detail drawer -->
+<div class="drawer" id="drawer">
+  <button class="close" onclick="closeDrawer()">&times;</button>
+  <div id="drawer-body"></div>
+</div>
+
+<script>
+  const MODEL = {{ model_json | safe }};
+
+  function tierClass(t){ return "t" + (t || 0); }
+
+  function renderFlow(){
+    const flow = document.getElementById("flow");
+    const nodes = MODEL.nodes;
+    const pivot = MODEL.pivot_step_id;
+    nodes.forEach((n, i) => {
+      // Node card.
+      const col = document.createElement("div");
+      col.className = "col";
+      const card = document.createElement("div");
+      card.className = "node " + n.status + (n.step_id === MODEL.analysis.break_step ? " is-break" : "");
+      card.onclick = () => openDrawer(n.step_id);
+      let tags = `<span class="tag ${tierClass(n.tier)}">T${n.tier}</span>`;
+      tags += `<span class="tag st">${n.status.replace('_',' ')}</span>`;
+      if (n.is_pivot) tags += `<span class="tag pivot">PIVOT</span>`;
+      else if (n.is_post_pivot) tags += `<span class="tag post">post</span>`;
+      card.innerHTML =
+        `<div class="sid">${n.step_id}</div>` +
+        `<div class="nm">${n.name}</div>` +
+        `<div class="tool">${n.tool}</div>` +
+        `<div class="tags">${tags}</div>`;
+      col.appendChild(card);
+      flow.appendChild(col);
+
+      // Connector or pivot bar after this node (except last).
+      if (i < nodes.length - 1){
+        // Draw the pivot divider right after the pivot node.
+        if (n.step_id === pivot){
+          const bar = document.createElement("div");
+          bar.className = "pivotbar";
+          flow.appendChild(bar);
+        } else {
+          const conn = document.createElement("div");
+          conn.className = "conn";
+          conn.textContent = "\u2192";
+          flow.appendChild(conn);
+        }
+      }
+    });
+  }
+
+  function row(k, v){
+    if (v === null || v === undefined || v === "") return "";
+    return `<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  }
+
+  function openDrawer(sid){
+    const n = MODEL.nodes.find(x => x.step_id === sid);
+    if (!n) return;
+    const body = document.getElementById("drawer-body");
+    let comp = "none";
+    if (n.compensation && n.compensation.tool){
+      comp = `${n.compensation.tool} <span class="muted">(${n.compensation.strategy||''}/${n.compensation.source||''})</span>`;
+    }
+    let pc = n.postcondition_passed;
+    pc = (pc === true) ? `<span class="ok">pass</span>` :
+         (pc === false) ? `<span class="bad">FAIL</span>` : "-";
+    const statusColor = {success:"ok",failure:"bad",unknown:"warn",compensated:"warn"}[n.status] || "muted";
+    body.innerHTML =
+      `<h3>${n.name}</h3>` +
+      `<div class="sub"><code>${n.step_id}</code> &middot; <code>${n.tool}</code></div>` +
+      `<div style="margin-top:12px"></div>` +
+      row("Status", `<span class="${statusColor}">${n.status.replace('_',' ')}</span>`) +
+      row("Tier", "T" + n.tier) +
+      row("Reversibility", n.reversibility) +
+      row("Risk level", n.risk_level) +
+      row("Pivot", n.is_pivot ? "yes (point of no return)" : (n.is_post_pivot ? "post-pivot" : "pre-pivot")) +
+      row("Attempts", n.attempt) +
+      row("Reconciled", n.reconciled ? "yes" : "-") +
+      row("Approval", n.approval_state || "-") +
+      row("Postcondition", pc) +
+      row("Approval required", n.approval_required ? "yes" : "no") +
+      row("Depends on", (n.depends_on && n.depends_on.length) ? n.depends_on.join(", ") : "-") +
+      row("Compensation", comp) +
+      (n.detail ? `<div style="margin-top:12px"><div class="k muted">Detail</div><pre>${n.detail}</pre></div>` : "");
+    document.getElementById("drawer").classList.add("open");
+  }
+  function closeDrawer(){ document.getElementById("drawer").classList.remove("open"); }
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+
+  renderFlow();
+</script>
+</body>
+</html>

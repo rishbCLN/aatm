@@ -20,8 +20,7 @@ import argparse
 import asyncio
 import json
 import sys
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from ..config import AATMConfig, default_config
 from ..engine import AATMEngine, EngineError
@@ -111,6 +110,12 @@ def cmd_run(args, config: AATMConfig) -> int:
         rep = engine.report(output, experiment=experiment)
         print(f"Report (JSON): {rep['_paths']['json']}")
         print(f"Report (HTML): {rep['_paths']['html']}")
+        # Interactive flow + breaking-analysis view.
+        from ..reporting.flow_view import FlowVisualizer
+
+        flow_path = FlowVisualizer(config).from_report_dict(
+            rep, str(output.run.run_id))
+        print(f"Flow (HTML):   {flow_path}")
         print(f"Assessment:    {rep['score']['status']} "
               f"({rep['score']['total']}/100)")
 
@@ -173,7 +178,6 @@ def cmd_report(args, config: AATMConfig) -> int:
 
 
 def cmd_list_runs(args, config: AATMConfig) -> int:
-    runs_dir = config.runs_dir
     audit_dir = config.audit_dir
     seen: set[str] = set()
     if audit_dir and audit_dir.exists():
@@ -206,6 +210,23 @@ def cmd_approve(args, config: AATMConfig) -> int:
                  reason=args.reason or "")
     verb = "GRANTED" if granted else "DENIED"
     print(f"Approval {verb} for run {args.run_id} step {args.step} (by {args.by}).")
+    return 0
+
+
+def cmd_flow(args, config: AATMConfig) -> int:
+    from ..reporting.flow_view import FlowVisualizer
+
+    viz = FlowVisualizer(config)
+    try:
+        path = viz.from_run_id(args.run_id)
+    except FileNotFoundError as exc:
+        _print_err(str(exc))
+        return 1
+    print(f"Flow (HTML): {path}")
+    if args.open:
+        import webbrowser
+
+        webbrowser.open(path.as_uri())
     return 0
 
 
@@ -318,6 +339,12 @@ def build_parser() -> argparse.ArgumentParser:
     al = sub.add_parser("approvals", help="Show a run's approval log.")
     al.add_argument("--run-id", required=True)
     al.set_defaults(func=cmd_approvals)
+
+    fl = sub.add_parser("flow", help="Generate the interactive flow + breaking "
+                        "analysis HTML for a run.")
+    fl.add_argument("--run-id", required=True)
+    fl.add_argument("--open", action="store_true", help="open in the browser")
+    fl.set_defaults(func=cmd_flow)
 
     sv = sub.add_parser("serve", help="Run the local HTTP API (dev/service mode).")
     sv.add_argument("--host", default="127.0.0.1")

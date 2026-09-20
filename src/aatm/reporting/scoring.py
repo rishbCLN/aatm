@@ -86,13 +86,8 @@ class Scorer:
               10 if consistent else 0, 10,
               f"final state {result.state}")
 
-        # Compensation correctness: all attempted compensations either succeeded
-        # or are explicitly surfaced (no silent failure).
-        comp_ok = all(
-            c.outcome in (Outcome.SUCCESS, Outcome.FAILURE)
-            for c in result.compensations
-        )
-        # Only full credit if failures led to INCONSISTENT (surfaced) or none failed.
+        # Compensation correctness: full credit only if failures led to
+        # INCONSISTENT (surfaced) or none failed (no silent failure).
         failed = [c for c in result.compensations if c.outcome == Outcome.FAILURE]
         if not failed:
             comp_score = 10

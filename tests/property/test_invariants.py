@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -124,8 +123,6 @@ class TestInvariants:
         unique in the world."""
         payments = list(reg.world.payments.keys())
         assert len(payments) == len(set(payments))
-        # Each intent maps to at most one recorded effect.
-        intents = [e["intent_id"] for e in reg.world.side_effect_log]
         # An intent may appear once per effect kind (book + cancel), which is fine;
         # what matters is no duplicate CREATE for the same intent.
         creates = [e for e in reg.world.side_effect_log

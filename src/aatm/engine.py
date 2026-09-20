@@ -19,7 +19,6 @@ from .adapters.failures import CrashSignal, FailureInjector
 from .config import AATMConfig, default_config
 from .models import SagaPlan, WorkflowRun
 from .planner import SagaPlanner, WorkflowParser
-from .planner.parser import WorkflowParseError
 from .reporting.evidence_report import EvidenceReport
 from .runtime import RecoveryManager, TransactionCoordinator
 

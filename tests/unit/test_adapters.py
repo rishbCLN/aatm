@@ -10,7 +10,6 @@ from aatm.adapters import (
     CrashSignal,
     FailureInjector,
     FailureRule,
-    MockWorldState,
 )
 from aatm.enums import FailureClass, Outcome
 from aatm.models import ActionIntent

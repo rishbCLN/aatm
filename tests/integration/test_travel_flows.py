@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from aatm.adapters import AdapterRegistry, FailureInjector, FailureRule
-from aatm.enums import Outcome, WorkflowState
+from aatm.enums import WorkflowState
 from aatm.planner import SagaPlanner, WorkflowParser
 from aatm.runtime import TransactionCoordinator
 
@@ -68,7 +68,6 @@ async def test_failure_at_step2_compensates_step1(tmp_config):
         # No hotel created; no payment.
         assert len(w.payments) == 0
         # Exactly one compensation (cancel_flight).
-        comp_tools = [c.strategy for c in run.compensations]
         assert len(run.compensations) == 1
         assert coord.audit.verify().valid
     finally:
