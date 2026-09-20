@@ -1,0 +1,280 @@
+"""AATM command-line interface.
+
+Commands (spec section 25):
+
+    aatm plan <workflow.yaml>
+    aatm run <workflow.yaml> [--inject <injection.yaml>] [--no-color] [--report]
+    aatm recover --run-id <RUN_ID>
+    aatm verify-audit --run-id <RUN_ID>
+    aatm report --run-id <RUN_ID>
+    aatm list-runs
+    aatm inspect-run --run-id <RUN_ID>
+
+Malformed workflow input yields a structured error and a non-zero exit code
+(never a raw traceback).
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+from pathlib import Path
+from typing import Any, Optional
+
+from ..config import AATMConfig, default_config
+from ..engine import AATMEngine, EngineError
+from ..planner.parser import WorkflowParseError
+from ..storage.audit_log import verify_audit_chain
+from .visualize import render_run
+
+
+def _print_err(msg: str) -> None:
+    print(f"error: {msg}", file=sys.stderr)
+
+
+def _approval_policy(auto_deny_pivot: bool):
+    def cb(step) -> bool:
+        if auto_deny_pivot and step.is_pivot:
+            return False
+        return True
+    return cb
+
+
+# --- commands ---------------------------------------------------------------
+
+
+def cmd_plan(args, config: AATMConfig) -> int:
+    engine = AATMEngine(config)
+    try:
+        plan = engine.plan(args.workflow)
+    except WorkflowParseError as exc:
+        _print_err(exc.message)
+        for d in exc.errors:
+            print(f"  - {d}", file=sys.stderr)
+        return 2
+
+    print(f"Workflow: {plan.workflow_name}  ({plan.workflow_id})")
+    print(f"Agent:    {plan.agent or '-'}")
+    print(f"Pivot:    {plan.pivot_step_id or 'none'}")
+    print(f"Valid:    {plan.is_valid}")
+    print("Steps:")
+    for s in plan.steps:
+        comp = s.compensation.tool if s.compensation and s.compensation.tool else "-"
+        flags = (" [" + ",".join(s.risk_flags) + "]") if s.risk_flags else ""
+        marker = "  <PIVOT>" if s.is_pivot else ("  (post)" if s.is_post_pivot else "")
+        print(f"  {s.step_id:8s} {s.tool_name:22s} T{int(s.tier)} "
+              f"{str(s.reversibility):16s} comp={comp}{marker}{flags}")
+    if plan.warnings:
+        print("\nWarnings:")
+        for w in plan.warnings:
+            print(f"  - {w}")
+    if plan.critical_issues:
+        print("\nCRITICAL ISSUES (execution blocked):")
+        for c in plan.critical_issues:
+            print(f"  - {c}")
+        return 1
+    return 0
+
+
+def cmd_run(args, config: AATMConfig) -> int:
+    engine = AATMEngine(config)
+    approval = _approval_policy(args.deny_pivot)
+    try:
+        output = asyncio.run(
+            engine.run(
+                args.workflow,
+                injection_path=args.inject,
+                approval_callback=approval,
+                backoff_scale=0.0 if args.fast else 0.001,
+            )
+        )
+    except WorkflowParseError as exc:
+        _print_err(exc.message)
+        for d in exc.errors:
+            print(f"  - {d}", file=sys.stderr)
+        return 2
+    except EngineError as exc:
+        _print_err(str(exc))
+        return 1
+
+    use_color = None
+    if args.no_color:
+        use_color = False
+    print(render_run(output.run, output.plan, use_color=use_color))
+    print(f"\nRUN_ID: {output.run.run_id}")
+
+    if args.report:
+        experiment = {"injection": str(args.inject) if args.inject else None,
+                      "crashed": output.crashed}
+        rep = engine.report(output, experiment=experiment)
+        print(f"Report (JSON): {rep['_paths']['json']}")
+        print(f"Report (HTML): {rep['_paths']['html']}")
+        print(f"Assessment:    {rep['score']['status']} "
+              f"({rep['score']['total']}/100)")
+
+    if output.crashed:
+        print("\n[!] Process crash was simulated. Run 'aatm recover --run-id "
+              f"{output.run.run_id}' to reconcile.")
+        return 3
+    return 0
+
+
+def cmd_recover(args, config: AATMConfig) -> int:
+    engine = AATMEngine(config)
+    try:
+        report, _reg = asyncio.run(engine.recover(args.run_id))
+    except Exception as exc:  # noqa: BLE001
+        _print_err(f"recovery failed: {exc}")
+        return 1
+    print("CRASH RECOVERY")
+    print("-" * 40)
+    print(f"Run:                 {report.run_id}")
+    print(f"Pending intents:     {report.pending_found}")
+    print(f"Duplicates prevented:{report.duplicates_prevented}")
+    for r in report.reconciliations:
+        print(f"  {r.step_id:10s} {r.tool:18s} -> {r.resolution}  {r.detail}")
+    return 0
+
+
+def cmd_verify_audit(args, config: AATMConfig) -> int:
+    path = config.audit_log_path(args.run_id)
+    if not path.exists():
+        _print_err(f"audit log not found for run {args.run_id}")
+        return 1
+    result = verify_audit_chain(path)
+    status = "VALID" if result.valid else "INVALID"
+    print(f"Audit chain: {status}")
+    print(f"Entries:     {result.entry_count}")
+    print(f"Detail:      {result.detail}")
+    if not result.valid:
+        print(f"Broken at seq: {result.broken_seq}")
+        return 1
+    return 0
+
+
+def cmd_report(args, config: AATMConfig) -> int:
+    json_path = config.report_json_path(args.run_id)
+    if not json_path.exists():
+        _print_err(
+            f"no report found for run {args.run_id}. Run with --report first."
+        )
+        return 1
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    print(f"Assessment:  {data['score']['status']} ({data['score']['total']}/100)")
+    print(f"State:       {data['result']['state']}")
+    print(f"Pivot:       {data['result']['pivot_step_id']} "
+          f"(crossed={data['result']['pivot_crossed']})")
+    print(f"Audit chain: {'VALID' if data['result']['audit_chain_valid'] else 'INVALID'}")
+    print(f"JSON:        {json_path}")
+    print(f"HTML:        {config.report_html_path(args.run_id)}")
+    return 0
+
+
+def cmd_list_runs(args, config: AATMConfig) -> int:
+    runs_dir = config.runs_dir
+    audit_dir = config.audit_dir
+    seen: set[str] = set()
+    if audit_dir and audit_dir.exists():
+        for p in sorted(audit_dir.glob("*.audit.jsonl")):
+            run_id = p.name.replace(".audit.jsonl", "")
+            seen.add(run_id)
+    if not seen:
+        print("No runs found.")
+        return 0
+    print("Runs:")
+    for run_id in sorted(seen):
+        report_path = config.report_json_path(run_id)
+        status = "-"
+        if report_path.exists():
+            try:
+                data = json.loads(report_path.read_text(encoding="utf-8"))
+                status = data["score"]["status"]
+            except Exception:  # noqa: BLE001
+                status = "?"
+        print(f"  {run_id}  {status}")
+    return 0
+
+
+def cmd_inspect_run(args, config: AATMConfig) -> int:
+    path = config.audit_log_path(args.run_id)
+    if not path.exists():
+        _print_err(f"no audit log for run {args.run_id}")
+        return 1
+    from ..storage.audit_log import AuditLog
+
+    log = AuditLog(path)
+    entries = log.entries()
+    print(f"Run {args.run_id}: {len(entries)} audit events")
+    for e in entries:
+        payload = json.dumps(e.get("payload", {}), default=str)
+        if len(payload) > 80:
+            payload = payload[:77] + "..."
+        print(f"  #{e['seq']:>3} {e['event']:24s} {e['entity_id']:12s} {payload}")
+    chain = log.verify()
+    print(f"\nChain: {'VALID' if chain.valid else 'INVALID'} - {chain.detail}")
+    return 0
+
+
+# --- parser -----------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="aatm",
+        description="Agent Action Transaction Manager - runtime safety/recovery "
+        "layer for AI-agent tool calls.",
+    )
+    sub = p.add_subparsers(dest="command", required=True)
+
+    sp = sub.add_parser("plan", help="Parse + plan a workflow.")
+    sp.add_argument("workflow")
+    sp.set_defaults(func=cmd_plan)
+
+    sr = sub.add_parser("run", help="Execute a workflow.")
+    sr.add_argument("workflow")
+    sr.add_argument("--inject", default=None, help="failure injection YAML")
+    sr.add_argument("--report", action="store_true", help="generate evidence report")
+    sr.add_argument("--no-color", action="store_true")
+    sr.add_argument("--deny-pivot", action="store_true",
+                    help="deny approval at the pivot (demo of approval-denied path)")
+    sr.add_argument("--fast", action="store_true",
+                    help="zero backoff (faster demo/tests)")
+    sr.set_defaults(func=cmd_run)
+
+    rc = sub.add_parser("recover", help="Recover a crashed run via WAL replay.")
+    rc.add_argument("--run-id", required=True)
+    rc.set_defaults(func=cmd_recover)
+
+    va = sub.add_parser("verify-audit", help="Verify a run's audit hash chain.")
+    va.add_argument("--run-id", required=True)
+    va.set_defaults(func=cmd_verify_audit)
+
+    rp = sub.add_parser("report", help="Show a run's report summary.")
+    rp.add_argument("--run-id", required=True)
+    rp.set_defaults(func=cmd_report)
+
+    lr = sub.add_parser("list-runs", help="List known runs.")
+    lr.set_defaults(func=cmd_list_runs)
+
+    ir = sub.add_parser("inspect-run", help="Dump a run's audit events.")
+    ir.add_argument("--run-id", required=True)
+    ir.set_defaults(func=cmd_inspect_run)
+
+    return p
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    config = default_config
+    try:
+        return int(args.func(args, config))
+    except KeyboardInterrupt:  # pragma: no cover
+        _print_err("interrupted")
+        return 130
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

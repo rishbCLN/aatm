@@ -1,0 +1,30 @@
+{
+  "version": "0.1.0",
+  "description": "Deterministic reversibility rules and the reversibility->tier mapping. Priority order: explicit workflow declaration > tool registry > adapter metadata > fail-closed unknown.",
+  "reversibility_to_tier": {
+    "fully_reversible": 1,
+    "compensatable": 2,
+    "irreversible": 3,
+    "unknown": 3
+  },
+  "unknown_tool_defaults": {
+    "reversibility": "unknown",
+    "side_effect_scope": "external",
+    "risk_level": "critical",
+    "approval_required": true,
+    "idempotent": false,
+    "idempotency_mode": "none",
+    "note": "Fail closed: an unclassified tool is treated as maximally dangerous. The engine never lets an LLM silently decide an unknown side effect is safe."
+  },
+  "scope_risk_hints": {
+    "none": "low",
+    "local": "low",
+    "internal": "medium",
+    "external": "high"
+  },
+  "tier_recovery_defaults": {
+    "1": "restore_checkpoint",
+    "2": "compensate",
+    "3": "forward_recovery_or_business_reversal"
+  }
+}

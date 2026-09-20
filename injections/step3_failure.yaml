@@ -1,0 +1,9 @@
+# F02/F03-style: tool error at step 3 (Reserve Car) - pre-pivot failure.
+# Expected: compensate step 2 (hotel) then step 1 (flight) in reverse completion
+# order; payment never attempted; final state CONSISTENT.
+enabled: true
+rules:
+  - mode: error
+    step: step-3
+    failure_class: resource_unavailable
+    message: CAR_UNAVAILABLE

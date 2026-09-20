@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aatm.local/schemas/result.schema.json",
+  "title": "AATM Run Result",
+  "type": "object",
+  "required": ["run_id", "workflow_id", "state"],
+  "additionalProperties": true,
+  "properties": {
+    "run_id": {"type": "string"},
+    "workflow_id": {"type": "string"},
+    "workflow_name": {"type": "string"},
+    "agent": {"type": "string"},
+    "build_version": {"type": "string"},
+    "state": {
+      "type": "string",
+      "enum": [
+        "PLANNED", "RUNNING", "WAITING_APPROVAL", "RECOVERING", "COMPLETED",
+        "ABORTED", "FAILED", "INCONSISTENT", "UNKNOWN", "TIMED_OUT"
+      ]
+    },
+    "pivot_step_id": {"type": ["string", "null"]},
+    "pivot_crossed": {"type": "boolean"},
+    "started_at": {"type": "string"},
+    "finished_at": {"type": "string"},
+    "duration_ms": {"type": "number"},
+    "steps": {"type": "array"},
+    "compensations": {"type": "array"},
+    "retries": {"type": "integer", "minimum": 0},
+    "unknown_outcomes": {"type": "integer", "minimum": 0},
+    "approvals": {"type": "array"},
+    "final_world_state": {"type": "object"},
+    "audit_chain_valid": {"type": "boolean"},
+    "audit_event_count": {"type": "integer", "minimum": 0},
+    "residual_risks": {"type": "array", "items": {"type": "string"}},
+    "failed_assertions": {"type": "array", "items": {"type": "string"}},
+    "consistent": {"type": "boolean"},
+    "exact_rollback_possible": {"type": "boolean"},
+    "detail": {"type": "string"}
+  }
+}

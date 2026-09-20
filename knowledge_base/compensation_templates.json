@@ -1,0 +1,79 @@
+{
+  "version": "0.1.0",
+  "description": "Verified compensation templates keyed by tool name. These are engineering-owned contracts (authority level 2), outranking any LLM suggestion.",
+  "templates": {
+    "book_flight": {
+      "strategy": "compensate",
+      "tool": "cancel_flight",
+      "mapping": {"booking_id": "result.booking_id"},
+      "confidence": 1.0,
+      "source": "registry",
+      "requires_approval": false,
+      "verification": {"type": "state_query", "expression": "booking.status == 'cancelled'"},
+      "risks": []
+    },
+    "book_hotel": {
+      "strategy": "compensate",
+      "tool": "cancel_hotel",
+      "mapping": {"booking_id": "result.booking_id"},
+      "confidence": 1.0,
+      "source": "registry",
+      "requires_approval": false,
+      "verification": {"type": "state_query", "expression": "booking.status == 'cancelled'"},
+      "risks": []
+    },
+    "reserve_car": {
+      "strategy": "compensate",
+      "tool": "cancel_car",
+      "mapping": {"booking_id": "result.booking_id"},
+      "confidence": 1.0,
+      "source": "registry",
+      "requires_approval": false,
+      "verification": {"type": "state_query", "expression": "booking.status == 'cancelled'"},
+      "risks": []
+    },
+    "charge_payment": {
+      "strategy": "forward_fix",
+      "tool": "refund_payment",
+      "mapping": {"transaction_id": "result.transaction_id"},
+      "confidence": 1.0,
+      "source": "registry",
+      "requires_approval": false,
+      "verification": {"type": "state_query", "expression": "refund.status == 'refunded'"},
+      "risks": [
+        "Payment capture is irreversible; a refund is a NEW transaction, not an undo of the original capture."
+      ]
+    },
+    "send_email": {
+      "strategy": "forward_fix",
+      "tool": "send_correction_email",
+      "mapping": {"to": "params.to"},
+      "confidence": 0.9,
+      "source": "registry",
+      "requires_approval": false,
+      "verification": null,
+      "risks": [
+        "Email cannot be un-sent; a correction email is a forward action, not a rollback."
+      ]
+    },
+    "create_database_record": {
+      "strategy": "compensate",
+      "tool": "delete_database_record",
+      "mapping": {"record_id": "result.record_id"},
+      "confidence": 1.0,
+      "source": "registry",
+      "requires_approval": false,
+      "verification": {"type": "state_query", "expression": "record.status == 'deleted'"},
+      "risks": []
+    },
+    "update_crm": {
+      "strategy": "compensate",
+      "tool": "delete_database_record",
+      "mapping": {"record_id": "result.record_id"},
+      "confidence": 0.95,
+      "source": "registry",
+      "requires_approval": false,
+      "risks": []
+    }
+  }
+}

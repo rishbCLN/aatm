@@ -1,0 +1,63 @@
+workflow:
+  id: wf-cloud-001
+  name: Cloud Resource Provisioning
+  description: Provision internal cloud resources with compensatable rollback (no external payment pivot).
+  agent: cloud-provisioning-agent
+  max_steps: 5
+  timeout_seconds: 90
+  failure_policy:
+    on_step_failure: compensate_and_abort
+    on_compensation_failure: escalate_human
+    on_unknown_outcome: query_and_reconcile
+    max_compensation_retries: 3
+
+steps:
+  - id: step-1
+    name: Create Network Record
+    tool: create_database_record
+    parameters:
+      resource: vpc
+      cidr: 10.0.0.0/16
+    postconditions:
+      - expression: result.status == 'active'
+        on_failure: compensate
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit]
+
+  - id: step-2
+    name: Create Compute Record
+    tool: create_database_record
+    parameters:
+      resource: compute
+      size: large
+    depends_on: [step-1]
+    postconditions:
+      - expression: result.status == 'active'
+        on_failure: compensate
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit]
+
+  - id: step-3
+    name: Confirm Provisioning
+    tool: confirm_bookings
+    parameters: {}
+    depends_on: [step-2]
+    retry:
+      max_attempts: 3
+      backoff: exponential
+      backoff_ms: 150
+      retry_on: [timeout, server_error]
+
+variables:
+  - name: environment
+    type: string
+    initial_value: staging
+
+failure_injection:
+  enabled: true

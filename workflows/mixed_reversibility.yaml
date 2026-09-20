@@ -1,0 +1,104 @@
+workflow:
+  id: wf-mixed-001
+  name: Mixed Reversibility Workflow
+  description: Exercises all three tiers - fully reversible, compensatable, and irreversible - around a single pivot.
+  agent: mixed-agent
+  max_steps: 6
+  timeout_seconds: 90
+  failure_policy:
+    on_step_failure: compensate_and_abort
+    on_compensation_failure: escalate_human
+    on_unknown_outcome: query_and_reconcile
+    max_compensation_retries: 3
+
+steps:
+  - id: step-1
+    name: Local Confirm (Tier 1)
+    tool: confirm_bookings
+    parameters: {}
+    retry:
+      max_attempts: 2
+      backoff: fixed
+      backoff_ms: 100
+      retry_on: [timeout]
+
+  - id: step-2
+    name: Reserve Flight (Tier 2)
+    tool: book_flight
+    parameters:
+      user_id: emp-77
+      flight_date: "2025-06-01"
+    depends_on: [step-1]
+    postconditions:
+      - expression: result.booking_status == 'confirmed'
+        on_failure: compensate
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit]
+
+  - id: step-3
+    name: Create CRM Record (Tier 2)
+    tool: create_database_record
+    parameters:
+      user_id: emp-77
+    depends_on: [step-2]
+    postconditions:
+      - expression: result.status == 'active'
+        on_failure: compensate
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit]
+
+  - id: step-4
+    name: Charge Payment (Tier 3 - PIVOT)
+    tool: charge_payment
+    parameters:
+      user_id: emp-77
+      amount: 32000
+      currency: INR
+    depends_on: [step-3]
+    is_pivot: true
+    approval_required: true
+    postconditions:
+      - expression: result.payment_status == 'captured'
+        on_failure: retry
+    idempotency_key: "emp-77|mixed-2025-06"
+    retry:
+      max_attempts: 1
+      backoff: none
+      retry_on: []
+
+  - id: step-5
+    name: Confirm Bookings (Tier 1, post-pivot)
+    tool: confirm_bookings
+    parameters: {}
+    depends_on: [step-4]
+    retry:
+      max_attempts: 3
+      backoff: exponential
+      backoff_ms: 150
+      retry_on: [timeout, server_error]
+
+  - id: step-6
+    name: Send Email (Tier 3, post-pivot)
+    tool: send_email
+    parameters:
+      to: emp-77@example.com
+    depends_on: [step-5]
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit]
+
+variables:
+  - name: user_id
+    type: string
+    initial_value: emp-77
+
+failure_injection:
+  enabled: true

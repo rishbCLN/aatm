@@ -1,0 +1,183 @@
+{
+  "version": "0.1.0",
+  "description": "Deterministic tool registry. Reversibility/tier/idempotency here outrank LLM suggestions. Unknown tools are NOT listed here and must fail closed.",
+  "tools": {
+    "book_flight": {
+      "description": "Reserve a flight seat (creates a booking record).",
+      "side_effect_scope": "external",
+      "reversibility": "compensatable",
+      "idempotent": false,
+      "idempotency_mode": "wrapper",
+      "timeout_ms": 5000,
+      "risk_level": "medium",
+      "compensation_contract": {
+        "tool": "cancel_flight",
+        "parameter_mapping": {"booking_id": "result.booking_id"},
+        "strategy": "compensate",
+        "verification": {"type": "state_query", "expression": "booking.status == 'cancelled'"}
+      }
+    },
+    "cancel_flight": {
+      "description": "Cancel a flight booking (semantic inverse of book_flight).",
+      "side_effect_scope": "external",
+      "reversibility": "compensatable",
+      "idempotent": true,
+      "idempotency_mode": "native",
+      "timeout_ms": 5000,
+      "risk_level": "low"
+    },
+    "book_hotel": {
+      "description": "Reserve a hotel room (creates a reservation).",
+      "side_effect_scope": "external",
+      "reversibility": "compensatable",
+      "idempotent": false,
+      "idempotency_mode": "wrapper",
+      "timeout_ms": 5000,
+      "risk_level": "medium",
+      "compensation_contract": {
+        "tool": "cancel_hotel",
+        "parameter_mapping": {"booking_id": "result.booking_id"},
+        "strategy": "compensate",
+        "verification": {"type": "state_query", "expression": "booking.status == 'cancelled'"}
+      }
+    },
+    "cancel_hotel": {
+      "description": "Cancel a hotel reservation.",
+      "side_effect_scope": "external",
+      "reversibility": "compensatable",
+      "idempotent": true,
+      "idempotency_mode": "native",
+      "timeout_ms": 5000,
+      "risk_level": "low"
+    },
+    "reserve_car": {
+      "description": "Reserve a rental car.",
+      "side_effect_scope": "external",
+      "reversibility": "compensatable",
+      "idempotent": false,
+      "idempotency_mode": "wrapper",
+      "timeout_ms": 5000,
+      "risk_level": "medium",
+      "compensation_contract": {
+        "tool": "cancel_car",
+        "parameter_mapping": {"booking_id": "result.booking_id"},
+        "strategy": "compensate",
+        "verification": {"type": "state_query", "expression": "booking.status == 'cancelled'"}
+      }
+    },
+    "cancel_car": {
+      "description": "Cancel a car reservation.",
+      "side_effect_scope": "external",
+      "reversibility": "compensatable",
+      "idempotent": true,
+      "idempotency_mode": "native",
+      "timeout_ms": 5000,
+      "risk_level": "low"
+    },
+    "charge_payment": {
+      "description": "Capture a payment on a corporate card. IRREVERSIBLE - the default pivot.",
+      "side_effect_scope": "external",
+      "reversibility": "irreversible",
+      "idempotent": false,
+      "idempotency_mode": "wrapper",
+      "timeout_ms": 8000,
+      "risk_level": "critical",
+      "compensation_contract": {
+        "tool": "refund_payment",
+        "parameter_mapping": {"transaction_id": "result.transaction_id"},
+        "strategy": "forward_fix",
+        "requires_approval": false,
+        "verification": {"type": "state_query", "expression": "refund.status == 'refunded'"}
+      }
+    },
+    "query_payment": {
+      "description": "Query a payment's state by transaction id (read-only).",
+      "side_effect_scope": "none",
+      "reversibility": "fully_reversible",
+      "idempotent": true,
+      "idempotency_mode": "native",
+      "timeout_ms": 3000,
+      "risk_level": "low"
+    },
+    "refund_payment": {
+      "description": "Issue a refund as a NEW transaction against a captured payment.",
+      "side_effect_scope": "external",
+      "reversibility": "irreversible",
+      "idempotent": false,
+      "idempotency_mode": "wrapper",
+      "timeout_ms": 8000,
+      "risk_level": "high"
+    },
+    "confirm_bookings": {
+      "description": "Verify that all reservations and the payment are consistent.",
+      "side_effect_scope": "internal",
+      "reversibility": "fully_reversible",
+      "idempotent": true,
+      "idempotency_mode": "native",
+      "timeout_ms": 4000,
+      "risk_level": "low"
+    },
+    "send_email": {
+      "description": "Send a confirmation email. IRREVERSIBLE - cannot un-send.",
+      "side_effect_scope": "external",
+      "reversibility": "irreversible",
+      "idempotent": false,
+      "idempotency_mode": "wrapper",
+      "timeout_ms": 5000,
+      "risk_level": "medium",
+      "compensation_contract": {
+        "tool": "send_correction_email",
+        "parameter_mapping": {"to": "params.to"},
+        "strategy": "forward_fix",
+        "requires_approval": false
+      }
+    },
+    "send_correction_email": {
+      "description": "Send a corrective email (forward fix, not an undo).",
+      "side_effect_scope": "external",
+      "reversibility": "irreversible",
+      "idempotent": false,
+      "idempotency_mode": "wrapper",
+      "timeout_ms": 5000,
+      "risk_level": "low"
+    },
+    "create_database_record": {
+      "description": "Create a CRM record (internal DB write).",
+      "side_effect_scope": "internal",
+      "reversibility": "compensatable",
+      "idempotent": false,
+      "idempotency_mode": "wrapper",
+      "timeout_ms": 4000,
+      "risk_level": "low",
+      "compensation_contract": {
+        "tool": "delete_database_record",
+        "parameter_mapping": {"record_id": "result.record_id"},
+        "strategy": "compensate",
+        "verification": {"type": "state_query", "expression": "record.status == 'deleted'"}
+      }
+    },
+    "update_crm": {
+      "description": "Create/update a CRM record (internal DB write).",
+      "side_effect_scope": "internal",
+      "reversibility": "compensatable",
+      "idempotent": false,
+      "idempotency_mode": "wrapper",
+      "timeout_ms": 4000,
+      "risk_level": "low",
+      "compensation_contract": {
+        "tool": "delete_database_record",
+        "parameter_mapping": {"record_id": "result.record_id"},
+        "strategy": "compensate"
+      }
+    },
+    "delete_database_record": {
+      "description": "Delete a CRM record (semantic inverse of create).",
+      "side_effect_scope": "internal",
+      "reversibility": "compensatable",
+      "idempotent": true,
+      "idempotency_mode": "native",
+      "timeout_ms": 4000,
+      "risk_level": "low"
+    }
+  }
+}

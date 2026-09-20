@@ -1,0 +1,68 @@
+workflow:
+  id: wf-financial-001
+  name: Financial Settlement Workflow
+  description: A payment-first workflow where the irreversible charge is the pivot and downstream steps are post-pivot.
+  agent: finance-agent
+  max_steps: 4
+  timeout_seconds: 90
+  failure_policy:
+    on_step_failure: compensate_and_abort
+    on_compensation_failure: escalate_human
+    on_unknown_outcome: query_and_reconcile
+    max_compensation_retries: 3
+
+steps:
+  - id: step-1
+    name: Reserve Ledger Entry
+    tool: create_database_record
+    parameters:
+      ledger: settlement
+      account: acct-9931
+    postconditions:
+      - expression: result.status == 'active'
+        on_failure: compensate
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit]
+
+  - id: step-2
+    name: Capture Settlement Payment
+    tool: charge_payment
+    parameters:
+      account: acct-9931
+      amount: 128000
+      currency: INR
+    depends_on: [step-1]
+    is_pivot: true
+    approval_required: true
+    postconditions:
+      - expression: result.payment_status == 'captured'
+        on_failure: retry
+    idempotency_key: "acct-9931|settlement-2025-q1"
+    retry:
+      max_attempts: 1
+      backoff: none
+      retry_on: []
+
+  - id: step-3
+    name: Send Settlement Notice
+    tool: send_email
+    parameters:
+      to: finance@example.com
+      subject: Settlement captured
+    depends_on: [step-2]
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit]
+
+variables:
+  - name: account
+    type: string
+    initial_value: acct-9931
+
+failure_injection:
+  enabled: true

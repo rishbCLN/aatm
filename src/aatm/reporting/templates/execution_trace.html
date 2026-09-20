@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AATM Execution Trace - {{ run_id }}</title>
+  <style>
+    body { background:#0f1419; color:#e6edf3; font-family: ui-monospace, Consolas,
+      monospace; margin:0; padding:24px; }
+    h1 { font-size:18px; } .seq { color:#93a1b0; }
+    .event { color:#58a6ff; } .entity { color:#d29922; }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    td, th { padding:4px 8px; border-bottom:1px solid #30363d; text-align:left;
+      vertical-align: top; }
+    pre { margin:0; white-space:pre-wrap; color:#93a1b0; }
+  </style>
+</head>
+<body>
+  <h1>Execution Trace - run {{ run_id }}</h1>
+  <table>
+    <thead><tr><th>#</th><th>Event</th><th>Entity</th><th>Payload</th><th>Hash</th></tr></thead>
+    <tbody>
+    {% for e in entries %}
+      <tr>
+        <td class="seq">{{ e.seq }}</td>
+        <td class="event">{{ e.event }}</td>
+        <td class="entity">{{ e.entity_id }}</td>
+        <td><pre>{{ e.payload | tojson(indent=1) }}</pre></td>
+        <td class="seq">{{ e.hash[:12] }}…</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

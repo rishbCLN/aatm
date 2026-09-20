@@ -1,0 +1,150 @@
+workflow:
+  id: wf-travel-001
+  name: Corporate Travel Booking
+  description: Book a business trip (flight, hotel, car), charge the corporate card, confirm, notify, and update CRM.
+  agent: travel-booking-agent
+  max_steps: 7
+  timeout_seconds: 120
+  failure_policy:
+    on_step_failure: compensate_and_abort
+    on_compensation_failure: escalate_human
+    on_unknown_outcome: query_and_reconcile
+    max_compensation_retries: 3
+
+steps:
+  - id: step-1
+    name: Reserve Flight
+    tool: book_flight
+    parameters:
+      user_id: emp-4521
+      origin: BLR
+      destination: SFO
+      flight_date: "2025-03-15"
+    depends_on: []
+    postconditions:
+      - expression: result.booking_status == 'confirmed'
+        on_failure: compensate
+    idempotency_key: "user_id|flight_date"
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 250
+      retry_on: [timeout, rate_limit]
+
+  - id: step-2
+    name: Reserve Hotel
+    tool: book_hotel
+    parameters:
+      user_id: emp-4521
+      city: San Francisco
+      check_in: "2025-03-15"
+      nights: 4
+    depends_on: [step-1]
+    postconditions:
+      - expression: result.booking_status == 'confirmed'
+        on_failure: compensate
+    idempotency_key: "user_id|check_in"
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 250
+      retry_on: [timeout, rate_limit]
+
+  - id: step-3
+    name: Reserve Car
+    tool: reserve_car
+    parameters:
+      user_id: emp-4521
+      city: San Francisco
+      pickup: "2025-03-15"
+    depends_on: [step-2]
+    postconditions:
+      - expression: result.booking_status == 'confirmed'
+        on_failure: compensate
+    idempotency_key: "user_id|pickup"
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 250
+      retry_on: [timeout, rate_limit]
+
+  - id: step-4
+    name: Charge Corporate Card
+    tool: charge_payment
+    parameters:
+      user_id: emp-4521
+      amount: 45200
+      currency: INR
+    depends_on: [step-3]
+    is_pivot: true
+    approval_required: true
+    postconditions:
+      - expression: result.payment_status == 'captured'
+        on_failure: retry
+    idempotency_key: "user_id|amount|trip-2025-03-15"
+    retry:
+      max_attempts: 1
+      backoff: none
+      retry_on: []
+
+  - id: step-5
+    name: Confirm All Bookings
+    tool: confirm_bookings
+    parameters:
+      user_id: emp-4521
+    depends_on: [step-4]
+    postconditions:
+      - expression: result.all_confirmed == true
+        on_failure: retry
+    retry:
+      max_attempts: 3
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit, server_error]
+
+  - id: step-6
+    name: Send Confirmation Email
+    tool: send_email
+    parameters:
+      to: emp-4521@example.com
+      subject: Your trip is booked
+    depends_on: [step-5]
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit]
+
+  - id: step-7
+    name: Update CRM
+    tool: update_crm
+    parameters:
+      user_id: emp-4521
+      trip: business-sfo-2025-03
+    depends_on: [step-6]
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit]
+
+variables:
+  - name: user_id
+    type: string
+    initial_value: emp-4521
+
+tools:
+  - name: book_flight
+    description: Reserve a flight seat
+    side_effect_scope: external
+    reversibility: compensatable
+    idempotent: false
+    idempotency_mode: wrapper
+    timeout_ms: 5000
+    compensation_contract:
+      tool: cancel_flight
+      parameter_mapping:
+        booking_id: result.booking_id
+
+failure_injection:
+  enabled: true

@@ -1,0 +1,11 @@
+# F10-style: crash AFTER the payment side effect is applied but before AATM
+# receives the response (step 4 charge_payment).
+# Expected on restart: WAL replay finds a PENDING/RUNNING payment intent, queries
+# the payment system by intent_id, discovers the charge succeeded, marks it
+# COMMITTED, and continues post-pivot recovery WITHOUT issuing a duplicate charge.
+enabled: true
+rules:
+  - mode: crash
+    step: step-4
+    tool: charge_payment
+    phase: after

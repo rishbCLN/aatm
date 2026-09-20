@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aatm.local/schemas/workflow.schema.json",
+  "title": "AATM Workflow",
+  "type": "object",
+  "required": ["workflow", "steps"],
+  "additionalProperties": true,
+  "properties": {
+    "workflow": {
+      "type": "object",
+      "required": ["id", "name"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "agent": {"type": "string"},
+        "max_steps": {"type": "integer", "minimum": 1},
+        "timeout_seconds": {"type": "integer", "minimum": 1},
+        "failure_policy": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "on_step_failure": {"type": "string"},
+            "on_compensation_failure": {"type": "string"},
+            "on_unknown_outcome": {"type": "string"},
+            "max_compensation_retries": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "tool"],
+        "additionalProperties": true,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "name": {"type": "string"},
+          "tool": {"type": "string", "minLength": 1},
+          "parameters": {"type": "object"},
+          "depends_on": {"type": "array", "items": {"type": "string"}},
+          "preconditions": {"type": "array"},
+          "postconditions": {"type": "array"},
+          "compensation": {"type": ["object", "null"]},
+          "is_pivot": {"type": "boolean"},
+          "approval_required": {"type": "boolean"},
+          "idempotency_key": {"type": "string"},
+          "retry": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "max_attempts": {"type": "integer", "minimum": 1},
+              "backoff": {"type": "string", "enum": ["none", "fixed", "exponential"]},
+              "backoff_ms": {"type": "integer", "minimum": 0},
+              "retry_on": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "variables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {"type": "string"},
+          "initial_value": {}
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {"$ref": "tool.schema.json"}
+    },
+    "failure_injection": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

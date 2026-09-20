@@ -1,0 +1,10 @@
+# F07-style: timeout at step 5 (Confirm Bookings) AFTER the payment pivot.
+# The confirm call keeps timing out for the first 3 attempts, exhausting retries.
+# Expected: forward recovery - refund payment (new transaction), cancel car/hotel/
+# flight; final state BUSINESS-CONSISTENT, NOT exact rollback.
+enabled: true
+rules:
+  - mode: timeout
+    step: step-5
+    as_unknown: false
+    until_attempt: 5

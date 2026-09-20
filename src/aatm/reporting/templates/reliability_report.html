@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AATM Reliability &amp; Evidence Report - {{ report.result.run_id }}</title>
+  <style>
+    :root {
+      --bg: #0f1419; --panel: #1a212b; --panel2: #232c38; --fg: #e6edf3;
+      --muted: #93a1b0; --ok: #2ea043; --warn: #d29922; --bad: #f85149;
+      --accent: #58a6ff; --line: #30363d;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg);
+      font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.5; }
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 32px 20px 80px; }
+    h1 { font-size: 24px; margin: 0 0 4px; }
+    h2 { font-size: 18px; margin: 32px 0 12px; border-bottom: 1px solid var(--line);
+      padding-bottom: 6px; }
+    h3 { font-size: 15px; margin: 18px 0 8px; color: var(--accent); }
+    .sub { color: var(--muted); font-size: 13px; }
+    .panel { background: var(--panel); border: 1px solid var(--line);
+      border-radius: 8px; padding: 16px 18px; margin: 12px 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px; }
+    .kv { display: flex; justify-content: space-between; padding: 4px 0;
+      border-bottom: 1px dashed var(--line); font-size: 14px; }
+    .kv:last-child { border-bottom: none; }
+    .kv .k { color: var(--muted); }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 600; }
+    .b-pass { background: rgba(46,160,67,.15); color: var(--ok);
+      border: 1px solid var(--ok); }
+    .b-cond { background: rgba(210,153,34,.15); color: var(--warn);
+      border: 1px solid var(--warn); }
+    .b-fail { background: rgba(248,81,73,.15); color: var(--bad);
+      border: 1px solid var(--bad); }
+    .b-inc { background: rgba(210,153,34,.15); color: var(--warn);
+      border: 1px solid var(--warn); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 600; }
+    .tier-1 { color: var(--ok); } .tier-2 { color: var(--accent); }
+    .tier-3 { color: var(--bad); } .tier-0 { color: var(--muted); }
+    .pivot-tag { background: var(--bad); color: #fff; padding: 1px 6px;
+      border-radius: 4px; font-size: 11px; }
+    .post-tag { background: var(--warn); color: #000; padding: 1px 6px;
+      border-radius: 4px; font-size: 11px; }
+    .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+    .bar { height: 10px; background: var(--panel2); border-radius: 5px;
+      overflow: hidden; margin-top: 6px; }
+    .bar > span { display: block; height: 100%; background: var(--accent); }
+    pre { background: var(--panel2); padding: 12px; border-radius: 6px;
+      overflow-x: auto; font-size: 12px; white-space: pre-wrap; }
+    .disclaimer { background: rgba(210,153,34,.08); border: 1px solid var(--warn);
+      border-radius: 6px; padding: 12px 14px; font-size: 13px; color: var(--warn);
+      margin: 16px 0; }
+    ul { margin: 6px 0; padding-left: 20px; } li { margin: 2px 0; font-size: 13px; }
+    .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  {% set r = report.result %}
+  {% set score = report.score %}
+  {% set status = score.status %}
+  <h1>AATM Reliability &amp; Evidence Report</h1>
+  <div class="sub">
+    {{ r.workflow_name }} &middot; run <code>{{ r.run_id }}</code>
+    &middot; build {{ report.meta.build_version }}
+    &middot; generated {{ report.meta.generated_at }}
+  </div>
+
+  <div class="disclaimer">{{ report.meta.disclaimer }}</div>
+
+  <!-- Summary -->
+  <div class="panel">
+    <div class="grid">
+      <div>
+        <div class="kv"><span class="k">Assessment</span>
+          <span class="badge
+            {%- if status == 'PASS' %} b-pass
+            {%- elif status == 'PASS_WITH_CONDITIONS' %} b-cond
+            {%- elif status == 'INCONSISTENT' %} b-inc
+            {%- else %} b-fail{% endif %}">{{ status }}</span></div>
+        <div class="kv"><span class="k">Score</span>
+          <span>{{ score.total }} / {{ score.max_total }}</span></div>
+        <div class="bar"><span style="width: {{ score.total }}%;"></span></div>
+      </div>
+      <div>
+        <div class="kv"><span class="k">Final state</span><span>{{ r.state }}</span></div>
+        <div class="kv"><span class="k">Agent</span><span>{{ r.agent or '-' }}</span></div>
+        <div class="kv"><span class="k">Consistent</span>
+          <span class="{{ 'ok' if r.consistent else 'bad' }}">{{ r.consistent }}</span></div>
+      </div>
+      <div>
+        <div class="kv"><span class="k">Pivot step</span>
+          <span>{{ r.pivot_step_id or 'none' }}</span></div>
+        <div class="kv"><span class="k">Pivot crossed</span>
+          <span class="{{ 'warn' if r.pivot_crossed else 'muted' }}">{{ r.pivot_crossed }}</span></div>
+        <div class="kv"><span class="k">Exact rollback possible</span>
+          <span class="{{ 'ok' if r.exact_rollback_possible else 'bad' }}">{{ r.exact_rollback_possible }}</span></div>
+      </div>
+      <div>
+        <div class="kv"><span class="k">Retries</span><span>{{ r.retries }}</span></div>
+        <div class="kv"><span class="k">Unknown outcomes</span><span>{{ r.unknown_outcomes }}</span></div>
+        <div class="kv"><span class="k">Audit chain</span>
+          <span class="{{ 'ok' if r.audit_chain_valid else 'bad' }}">
+            {{ 'VALID' if r.audit_chain_valid else 'INVALID' }} ({{ r.audit_event_count }})</span></div>
+      </div>
+    </div>
+    {% if r.pivot_crossed %}
+    <p class="warn" style="margin-top:12px;">
+      Payment/irreversible action crossed the pivot. Recovery used a forward
+      action (e.g. a refund is a NEW transaction, not an undo of the original
+      capture). Exact rollback was not possible after the pivot.
+    </p>
+    {% endif %}
+    {% if score.floor_violations %}
+    <div class="disclaimer" style="border-color: var(--bad); color: var(--bad);">
+      <strong>Mandatory score floor violations:</strong>
+      <ul>{% for v in score.floor_violations %}<li>{{ v }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Tool inventory + reversibility -->
+  <h2>Tool Inventory &amp; Reversibility</h2>
+  <div class="panel">
+    <table>
+      <thead><tr>
+        <th>Step</th><th>Tool</th><th>Tier</th><th>Reversibility</th>
+        <th>Scope</th><th>Risk</th><th>Compensation</th><th>Flags</th>
+      </tr></thead>
+      <tbody>
+      {% for t in report.tool_inventory %}
+        <tr>
+          <td>{{ t.step_id }}
+            {% if t.is_pivot %}<span class="pivot-tag">PIVOT</span>{% endif %}
+            {% if t.is_post_pivot %}<span class="post-tag">post</span>{% endif %}
+          </td>
+          <td><code>{{ t.tool }}</code></td>
+          <td class="tier-{{ t.tier }}">T{{ t.tier }}</td>
+          <td>{{ t.reversibility }}</td>
+          <td>{{ t.side_effect_scope }}</td>
+          <td>{{ t.risk_level }}</td>
+          <td>{% if t.compensation and t.compensation.tool %}
+            {{ t.compensation.tool }}
+            <span class="muted">({{ t.compensation.strategy }}/{{ t.compensation.source }})</span>
+            {% else %}<span class="muted">none</span>{% endif %}</td>
+          <td>{% for f in t.risk_flags %}<span class="muted">{{ f }}</span><br>{% endfor %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Execution steps -->
+  <h2>Execution Trace</h2>
+  <div class="panel">
+    <table>
+      <thead><tr>
+        <th>Step</th><th>Attempt</th><th>Outcome</th><th>Postcondition</th>
+        <th>Approval</th><th>Reconciled</th><th>Detail</th>
+      </tr></thead>
+      <tbody>
+      {% for s in r.steps %}
+        <tr>
+          <td>{{ s.step_id }}</td>
+          <td>{{ s.attempt }}</td>
+          <td class="{{ 'ok' if s.outcome == 'success' else ('warn' if s.outcome == 'unknown' else 'bad') }}">
+            {{ s.outcome or '-' }}</td>
+          <td>{% if s.postcondition %}
+            <span class="{{ 'ok' if s.postcondition.passed else 'bad' }}">
+              {{ 'pass' if s.postcondition.passed else 'FAIL' }}</span>
+            {% else %}-{% endif %}</td>
+          <td>{{ s.approval_state }}</td>
+          <td>{{ 'yes' if s.reconciled else '-' }}</td>
+          <td class="muted">{{ s.detail }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Compensations -->
+  <h2>Compensation Executions</h2>
+  <div class="panel">
+    {% if r.compensations %}
+    <table>
+      <thead><tr>
+        <th>Source step</th><th>Strategy</th><th>Source</th><th>Outcome</th>
+        <th>Attempts</th><th>Verified</th><th>Residual risk</th>
+      </tr></thead>
+      <tbody>
+      {% for c in r.compensations %}
+        <tr>
+          <td>{{ c.source_step_id }}</td>
+          <td>{{ c.strategy }}</td>
+          <td>{{ c.source }}</td>
+          <td class="{{ 'ok' if c.outcome == 'success' else 'bad' }}">{{ c.outcome }}</td>
+          <td>{{ c.attempts }}</td>
+          <td>{% if c.verification %}
+            <span class="{{ 'ok' if c.verification.passed else 'bad' }}">
+              {{ 'yes' if c.verification.passed else 'no' }}</span>{% else %}-{% endif %}</td>
+          <td class="muted">{{ c.residual_risk | join('; ') }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="sub">Compensations execute in reverse completion order. Compensation
+      is a semantic forward action, not a physical rollback.</p>
+    {% else %}
+    <p class="muted">No compensations were required.</p>
+    {% endif %}
+  </div>
+
+  <!-- Final world state -->
+  <h2>Final World State</h2>
+  <div class="panel">
+    <pre>{{ r.final_world_state | tojson(indent=2) }}</pre>
+  </div>
+
+  <!-- Score breakdown -->
+  <h2>Engineering Score Breakdown</h2>
+  <div class="panel">
+    {% for cat, data in score.categories.items() %}
+      <h3>{{ cat.replace('_', ' ') | title }}
+        <span class="muted">({{ data.earned }}/{{ data.possible }})</span></h3>
+      <table>
+        <tbody>
+        {% for item in data['items'] %}
+          <tr>
+            <td>{{ item.item }}</td>
+            <td style="width:80px;" class="{{ 'ok' if item.earned == item.possible else ('bad' if item.earned == 0 else 'warn') }}">
+              {{ item.earned }}/{{ item.possible }}</td>
+            <td class="muted">{{ item.detail }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endfor %}
+  </div>
+
+  <!-- Residual risk + failed assertions -->
+  {% if r.residual_risks or r.failed_assertions %}
+  <h2>Residual Risk Register</h2>
+  <div class="panel">
+    {% if r.residual_risks %}<h3>Residual risks</h3>
+      <ul>{% for x in r.residual_risks %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+    {% if r.failed_assertions %}<h3>Failed assertions</h3>
+      <ul>{% for x in r.failed_assertions %}<li class="bad">{{ x }}</li>{% endfor %}</ul>{% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Experiment config -->
+  {% if report.experiment %}
+  <h2>Experiment / Failure Injection</h2>
+  <div class="panel"><pre>{{ report.experiment | tojson(indent=2) }}</pre></div>
+  {% endif %}
+
+  <!-- Analysis narrative -->
+  <h2>Recovery Narrative <span class="sub">(ANALYSIS - not ground truth)</span></h2>
+  <div class="panel">
+    <pre>{{ report.explanation }}</pre>
+    <h3>Evaluation</h3>
+    <div class="kv"><span class="k">Recovery policy match</span>
+      <span>{{ report.evaluation.recovery_policy_match }}</span></div>
+    {% if report.evaluation.what_went_wrong %}
+      <h3>What went wrong</h3>
+      <ul>{% for x in report.evaluation.what_went_wrong %}<li>{{ x }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if report.evaluation.suggested_improvements %}
+      <h3>Suggested improvements</h3>
+      <ul>{% for x in report.evaluation.suggested_improvements %}<li>{{ x }}</li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+
+  <div class="sub" style="margin-top:24px;">
+    AATM is an engineering prototype. It does not provide zero-risk guarantees,
+    regulatory certification, or true rollback of irreversible actions.
+  </div>
+</div>
+</body>
+</html>
