@@ -6,6 +6,7 @@
   "required": ["workflow", "steps"],
   "additionalProperties": true,
   "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
     "workflow": {
       "type": "object",
       "required": ["id", "name"],
@@ -48,6 +49,7 @@
           "is_pivot": {"type": "boolean"},
           "approval_required": {"type": "boolean"},
           "idempotency_key": {"type": "string"},
+          "timeout_ms": {"type": "integer", "minimum": 0},
           "retry": {
             "type": "object",
             "additionalProperties": true,

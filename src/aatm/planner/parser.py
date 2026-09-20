@@ -140,6 +140,17 @@ class WorkflowParser:
         # Semantic checks that JSON Schema can't easily express.
         errors.extend(self._semantic_checks(data))
 
+        # Format versioning: reject a workflow authored for a newer build.
+        raw_version = data.get("schema_version", 1)
+        try:
+            from ..storage.migrations import SchemaVersionError, check_format_version
+
+            check_format_version("workflow", int(raw_version))
+        except SchemaVersionError as exc:
+            errors.append(str(exc))
+        except (TypeError, ValueError):
+            errors.append(f"schema_version: must be an integer, got {raw_version!r}")
+
         if errors:
             raise WorkflowParseError("workflow validation failed", errors)
 

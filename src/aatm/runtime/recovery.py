@@ -73,7 +73,9 @@ class RecoveryManager:
         self.config = config or default_config
         self.wal = WriteAheadLog(self.config.wal_db_path(self.run_id))
         self.checkpoints = CheckpointStore(self.config.checkpoint_db_path(self.run_id))
-        self.audit = AuditLog(self.config.audit_log_path(self.run_id))
+        self.audit = AuditLog(self.config.audit_log_path(self.run_id),
+                              secret_key=self.config.audit_hmac_key,
+                              redact=self.config.redact_pii)
 
     def close(self) -> None:
         self.wal.close()

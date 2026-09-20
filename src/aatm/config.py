@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -54,6 +55,24 @@ class AATMConfig(BaseModel):
     default_timeout_ms: int = 5000
     max_compensation_retries: int = 3
     require_approval_for_unknown: bool = True
+
+    # Circuit breaker (per-tool). Trips OPEN after N consecutive failures; fails
+    # fast during the cooldown window; allows a trial call when HALF_OPEN.
+    circuit_failure_threshold: int = 5
+    circuit_cooldown_s: float = 30.0
+    circuit_half_open_trials: int = 1
+
+    # Human-in-the-loop approval: how long a Tier-3 approval request stays valid
+    # before the fail-safe (DENY) applies. Decisions may arrive out-of-band.
+    approval_timeout_s: float = 3600.0
+
+    # Audit hardening. When set, the audit log is HMAC-signed (tamper-proof, not
+    # just tamper-evident). Sourced from AATM_AUDIT_HMAC_KEY by default.
+    audit_hmac_key: Optional[str] = None
+
+    # PII/secret redaction for audit payloads and reports (on by default so
+    # sensitive values never touch disk).
+    redact_pii: bool = True
 
     # Feature flags
     enable_llm: bool = False  # Deterministic by default; LLM is opt-in/advisory.
@@ -108,6 +127,21 @@ class AATMConfig(BaseModel):
         assert self.audit_dir is not None
         return self.audit_dir / f"{run_id}.audit.jsonl"
 
+    def approval_path(self, run_id: str) -> Path:
+        """Durable human-in-the-loop approval request/decision log."""
+        assert self.runs_dir is not None
+        return self.runs_dir / f"{run_id}.approvals.jsonl"
+
+    def audit_anchor_path(self, run_id: str) -> Path:
+        """External anchor file recording audit-chain heads over time."""
+        assert self.audit_dir is not None
+        return self.audit_dir / f"{run_id}.anchor.jsonl"
+
+    def dead_letter_path(self, run_id: str) -> Path:
+        """Durable queue of compensations needing manual intervention."""
+        assert self.runs_dir is not None
+        return self.runs_dir / f"{run_id}.deadletter.jsonl"
+
     def run_state_path(self, run_id: str) -> Path:
         assert self.runs_dir is not None
         return self.runs_dir / f"{run_id}.run.json"
@@ -129,6 +163,9 @@ def _env_config() -> AATMConfig:
         kwargs["project_root"] = Path(root_override)
     if os.environ.get("AATM_ENABLE_LLM", "").lower() in {"1", "true", "yes"}:
         kwargs["enable_llm"] = True
+    hmac_key = os.environ.get("AATM_AUDIT_HMAC_KEY")
+    if hmac_key:
+        kwargs["audit_hmac_key"] = hmac_key
     return AATMConfig(**kwargs)  # type: ignore[arg-type]
 
 

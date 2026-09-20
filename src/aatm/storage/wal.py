@@ -20,6 +20,7 @@ from uuid import UUID
 from ..enums import WALStatus
 from ..models import ActionIntent, canonical_json, utcnow
 from .db import close_quiet, connect
+from .migrations import ensure_schema
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS wal (
@@ -135,6 +136,7 @@ class WriteAheadLog:
         self.db_path = Path(db_path)
         self._conn = connect(self.db_path)
         self._conn.executescript(_SCHEMA)
+        ensure_schema(self._conn, "wal")
 
     # --- lifecycle -----------------------------------------------------------
 

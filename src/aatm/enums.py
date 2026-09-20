@@ -155,6 +155,7 @@ class FailureClass(StrEnum):
     BUSINESS_RULE = "business_rule"
     RESOURCE_UNAVAILABLE = "resource_unavailable"
     MALFORMED = "malformed"
+    CIRCUIT_OPEN = "circuit_open"
     UNKNOWN = "unknown"
 
 
@@ -174,6 +175,7 @@ NON_RETRYABLE_FAILURES = frozenset(
         FailureClass.BUSINESS_RULE,
         FailureClass.RESOURCE_UNAVAILABLE,
         FailureClass.MALFORMED,
+        FailureClass.CIRCUIT_OPEN,
     }
 )
 
@@ -208,6 +210,9 @@ class AuditEvent(StrEnum):
     WORKFLOW_INCONSISTENT = "WORKFLOW_INCONSISTENT"
     CRASH_RECOVERY_START = "CRASH_RECOVERY_START"
     CRASH_RECOVERY_COMPLETE = "CRASH_RECOVERY_COMPLETE"
+    CIRCUIT_OPEN = "CIRCUIT_OPEN"
+    CIRCUIT_HALF_OPEN = "CIRCUIT_HALF_OPEN"
+    CIRCUIT_CLOSED = "CIRCUIT_CLOSED"
 
 
 class ReportStatus(StrEnum):

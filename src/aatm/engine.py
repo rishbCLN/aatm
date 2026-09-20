@@ -41,12 +41,14 @@ class RunOutput:
         registry: AdapterRegistry,
         duration_ms: float,
         crashed: bool = False,
+        metrics: Optional[dict[str, Any]] = None,
     ) -> None:
         self.run = run
         self.plan = plan
         self.registry = registry
         self.duration_ms = duration_ms
         self.crashed = crashed
+        self.metrics = metrics or {}
 
 
 class AATMEngine:
@@ -84,6 +86,7 @@ class AATMEngine:
         run_id: Optional[UUID] = None,
         approval_callback: Optional[Callable[[Any], bool]] = None,
         backoff_scale: float = 0.001,
+        timeout_scale: float = 1.0,
     ) -> RunOutput:
         plan = self.plan(workflow_path)
         if not plan.is_valid:
@@ -99,6 +102,7 @@ class AATMEngine:
         coord = TransactionCoordinator(
             plan, registry, config=self.config, run_id=rid,
             approval_callback=approval_callback, backoff_scale=backoff_scale,
+            timeout_scale=timeout_scale,
         )
         start = time.perf_counter()
         crashed = False
@@ -109,8 +113,10 @@ class AATMEngine:
             run = coord.run
         finally:
             duration_ms = (time.perf_counter() - start) * 1000.0
+            metrics = coord.metrics.snapshot()
             coord.close()
-        return RunOutput(run, plan, registry, duration_ms, crashed=crashed)
+        return RunOutput(run, plan, registry, duration_ms, crashed=crashed,
+                         metrics=metrics)
 
     # -- recovery -------------------------------------------------------------
 
@@ -149,13 +155,16 @@ class AATMEngine:
         approvals: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         reporter = EvidenceReport(self.config)
+        # Prefer counters captured by the coordinator's metrics when available.
+        counters = (output.metrics or {}).get("counters", {})
         return reporter.generate(
             output.run,
             plan=output.plan,
             world_summary=output.registry.world.summary(),
             duration_ms=output.duration_ms,
-            retries=retries,
-            unknown_outcomes=unknown_outcomes,
+            retries=retries or int(counters.get("retries", 0)),
+            unknown_outcomes=unknown_outcomes or int(counters.get("unknown_outcomes", 0)),
             approvals=approvals,
             experiment=experiment,
+            metrics=output.metrics,
         )

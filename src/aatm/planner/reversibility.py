@@ -45,6 +45,7 @@ class Classification:
         approval_required: bool,
         source: str,
         explanation: str = "",
+        timeout_ms: int = 5000,
     ) -> None:
         self.tool_name = tool_name
         self.reversibility = reversibility
@@ -56,6 +57,7 @@ class Classification:
         self.approval_required = approval_required
         self.source = source  # explicit | registry | adapter | fail_closed
         self.explanation = explanation
+        self.timeout_ms = timeout_ms
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -160,6 +162,7 @@ class ReversibilityClassifier:
         idempotent = bool(meta.get("idempotent", False))
         idem_mode = IdempotencyMode(meta.get("idempotency_mode", "none"))
         approval = bool(meta.get("approval_required", False))
+        timeout_ms = int(meta.get("timeout_ms", 5000) or 5000)
         # Tier-3 always needs approval consideration (planner enforces globally too).
         if reversibility == Reversibility.IRREVERSIBLE and meta.get(
             "approval_required"
@@ -175,6 +178,7 @@ class ReversibilityClassifier:
             idempotency_mode=idem_mode,
             approval_required=approval,
             source=source,
+            timeout_ms=timeout_ms,
         )
 
     def _fail_closed(self, tool_name: str) -> Classification:
@@ -195,6 +199,7 @@ class ReversibilityClassifier:
                 "Tool is not in the verified registry; classified as unknown and "
                 "treated as maximally dangerous (approval required)."
             ),
+            timeout_ms=int(defaults.get("timeout_ms", 5000) or 5000),
         )
 
 

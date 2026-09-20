@@ -22,6 +22,7 @@ Entry shape (spec section 19):
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,10 @@ GENESIS_HASH = "0" * 64
 
 def _sha256_hex(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _hmac_hex(key: bytes, text: str) -> str:
+    return hmac.new(key, text.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def compute_entry_hash(
@@ -91,10 +96,34 @@ class AuditVerificationResult:
 class AuditLog:
     """Hash-chained append-only log persisted as JSON Lines."""
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, secret_key: Optional[str] = None,
+                 redact: Optional[bool] = None) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Optional HMAC signing key. When set (explicitly or via the
+        # AATM_AUDIT_HMAC_KEY env var), every entry is signed so the log becomes
+        # tamper-*proof*, not merely tamper-*evident*: an attacker who edits the
+        # file cannot forge valid signatures without the secret.
+        import os
+
+        key = secret_key if secret_key is not None else os.environ.get(
+            "AATM_AUDIT_HMAC_KEY"
+        )
+        self._key: Optional[bytes] = key.encode("utf-8") if key else None
+        # PII/secret redaction is on by default so sensitive values never touch
+        # disk. The hash chain is computed over the redacted payload, so
+        # verification stays consistent.
+        if redact is None:
+            redact = os.environ.get("AATM_REDACT_PII", "1") not in ("0", "false",
+                                                                     "False", "")
+        from ..redaction import Redactor
+
+        self._redactor = Redactor(enabled=redact)
         self._seq, self._last_hash = self._load_tail()
+
+    @property
+    def signed(self) -> bool:
+        return self._key is not None
 
     def _load_tail(self) -> tuple[int, str]:
         """Read the last entry to resume the chain (seq + last hash)."""
@@ -123,6 +152,9 @@ class AuditLog:
     ) -> dict[str, Any]:
         """Append a new hash-chained entry and return it."""
         payload = payload or {}
+        # Redact PII/secrets BEFORE hashing so nothing sensitive is persisted and
+        # the chain covers exactly what is stored.
+        payload = self._redactor.redact(payload)
         event_name = event.value if isinstance(event, AuditEvent) else str(event)
         seq = self._seq + 1
         timestamp = utcnow().isoformat()
@@ -143,6 +175,8 @@ class AuditLog:
             "prev_hash": prev_hash,
             "hash": entry_hash,
         }
+        if self._key is not None:
+            entry["sig"] = _hmac_hex(self._key, entry_hash)
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, default=str) + "\n")
             fh.flush()
@@ -232,12 +266,51 @@ class AuditLog:
                     broken_seq=seq,
                 )
 
+            # HMAC signature check (only when a signing key is available).
+            if self._key is not None:
+                expected_sig = _hmac_hex(self._key, entry["hash"])
+                if entry.get("sig") != expected_sig:
+                    return AuditVerificationResult(
+                        False,
+                        len(entries),
+                        f"HMAC signature mismatch at seq {seq}",
+                        broken_seq=seq,
+                    )
+
             prev_hash = entry["hash"]
             expected_seq += 1
 
-        return AuditVerificationResult(True, len(entries), "chain intact")
+        detail = "chain intact (HMAC-signed)" if self._key else "chain intact"
+        return AuditVerificationResult(True, len(entries), detail)
+
+    # --- anchoring -----------------------------------------------------------
+
+    def head(self) -> dict[str, Any]:
+        """Return the current chain head (seq + hash), for external anchoring."""
+        return {"run_id": None, "seq": self._seq, "hash": self._last_hash}
+
+    def anchor(self, anchor_path: Path | str) -> dict[str, Any]:
+        """Append the current head to an external append-only anchor file.
+
+        Anchoring the head hash somewhere outside the log lets you later prove the
+        log has not been truncated or rewritten wholesale (which an in-file chain
+        alone cannot detect).
+        """
+        head = {"seq": self._seq, "hash": self._last_hash,
+                "timestamp": utcnow().isoformat()}
+        if self._key is not None:
+            head["sig"] = _hmac_hex(self._key, self._last_hash)
+        p = Path(anchor_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(head, default=str) + "\n")
+        return head
 
 
-def verify_audit_chain(path: Path | str) -> AuditVerificationResult:
-    """Convenience wrapper used by the CLI and tests."""
-    return AuditLog(path).verify()
+def verify_audit_chain(path: Path | str,
+                       secret_key: Optional[str] = None) -> AuditVerificationResult:
+    """Convenience wrapper used by the CLI and tests.
+
+    Picks up the HMAC key from ``AATM_AUDIT_HMAC_KEY`` automatically when set.
+    """
+    return AuditLog(path, secret_key=secret_key).verify()

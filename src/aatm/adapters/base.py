@@ -8,6 +8,7 @@ function call inside the coordinator.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Optional, Protocol, runtime_checkable
 from uuid import UUID
@@ -39,6 +40,10 @@ class MockWorldState:
     """
 
     def __init__(self, persist_path: "Optional[Any]" = None) -> None:
+        # Guards the id counter and the append-only effect log so concurrent
+        # adapter calls (parallel branches / shared world) cannot collide on ids
+        # or corrupt the log.
+        self._lock = threading.RLock()
         self.flights: dict[str, dict[str, Any]] = {}
         self.hotels: dict[str, dict[str, Any]] = {}
         self.cars: dict[str, dict[str, Any]] = {}
@@ -59,20 +64,22 @@ class MockWorldState:
             self._load_persisted()
 
     def next_id(self, prefix: str) -> str:
-        self._counter += 1
-        return f"{prefix}-{self._counter:04d}"
+        with self._lock:
+            self._counter += 1
+            return f"{prefix}-{self._counter:04d}"
 
     def record_effect(self, intent_id: str, kind: str, entity_id: str,
                       data: dict[str, Any]) -> None:
-        self.intent_effects[intent_id] = {
-            "kind": kind,
-            "entity_id": entity_id,
-            "data": data,
-        }
-        self.side_effect_log.append(
-            {"intent_id": intent_id, "kind": kind, "entity_id": entity_id}
-        )
-        self._flush()
+        with self._lock:
+            self.intent_effects[intent_id] = {
+                "kind": kind,
+                "entity_id": entity_id,
+                "data": data,
+            }
+            self.side_effect_log.append(
+                {"intent_id": intent_id, "kind": kind, "entity_id": entity_id}
+            )
+            self._flush()
 
     # -- durable external-system persistence ---------------------------------
 

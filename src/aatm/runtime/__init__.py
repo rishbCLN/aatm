@@ -1,5 +1,6 @@
 """Runtime execution: coordinator, retry, recovery."""
 
+from .circuit_breaker import BreakerState, CircuitBreaker
 from .coordinator import TransactionCoordinator, auto_approve
 from .recovery import RecoveryManager, RecoveryReport
 from .retry import backoff_delay_ms, is_retryable, sleep_backoff
@@ -12,4 +13,6 @@ __all__ = [
     "is_retryable",
     "backoff_delay_ms",
     "sleep_backoff",
+    "CircuitBreaker",
+    "BreakerState",
 ]

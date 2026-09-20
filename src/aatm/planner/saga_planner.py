@@ -147,6 +147,8 @@ class SagaPlanner:
             idempotent=classification.idempotent,
             idempotency_mode=classification.idempotency_mode,
             retry=retry,
+            timeout_ms=int(raw.get("timeout_ms", classification.timeout_ms)
+                           or classification.timeout_ms),
         )
 
         # Resolve compensation using the authority hierarchy.

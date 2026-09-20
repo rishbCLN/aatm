@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 
-def connect(db_path: Path | str) -> sqlite3.Connection:
+def sqlite_connect(db_path: Path | str) -> sqlite3.Connection:
     """Open a SQLite connection with sane durability defaults.
 
     - ``journal_mode=WAL`` for durability + concurrent reads.
@@ -27,6 +28,18 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=FULL;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
+
+
+def connect(db_path: Path | str) -> Any:
+    """Open a connection using the active storage backend.
+
+    Defaults to SQLite (see :func:`sqlite_connect`). Delegates to the configured
+    backend (e.g. Postgres) when ``AATM_DB_URL`` selects one. Imported lazily to
+    avoid a circular import with the backend module.
+    """
+    from .backend import get_backend
+
+    return get_backend().connect(db_path)
 
 
 def close_quiet(conn: sqlite3.Connection | None) -> None:

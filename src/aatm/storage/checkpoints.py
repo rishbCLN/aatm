@@ -27,6 +27,7 @@ from uuid import UUID, uuid4
 
 from ..models import canonical_json, utcnow
 from .db import close_quiet, connect
+from .migrations import ensure_schema
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS checkpoints (
@@ -100,6 +101,7 @@ class CheckpointStore:
         self.db_path = Path(db_path)
         self._conn = connect(self.db_path)
         self._conn.executescript(_SCHEMA)
+        ensure_schema(self._conn, "checkpoints")
 
     def close(self) -> None:
         close_quiet(self._conn)

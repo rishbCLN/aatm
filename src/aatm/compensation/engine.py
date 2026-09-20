@@ -169,24 +169,29 @@ class CompensationEngine:
 
         policy = RetryPolicy(max_attempts=self.max_retries, backoff="exponential",
                              backoff_ms=100)
+
+        # A single, STABLE compensation intent id is reused across all retries so
+        # the adapter can dedupe by intent_id. Regenerating it per attempt would
+        # risk double-compensation (e.g. a second refund) when a prior attempt
+        # actually succeeded server-side but its response was lost.
+        comp_intent = ActionIntent(
+            run_id=self.run_id,
+            workflow_id=self.workflow_id,
+            step_id=f"comp:{action.step_id}",
+            tool_name=comp.tool,
+            parameters=validation.bound_parameters,
+            is_compensation=True,
+        )
+        record.compensation_intent_id = comp_intent.intent_id
+        # WAL BEFORE side effect (written once; status transitions per attempt).
+        self.wal.write_intent(comp_intent, tier=2)
+
         attempt = 0
         last_detail = ""
         while attempt < self.max_retries:
             attempt += 1
             record.attempts = attempt
 
-            comp_intent = ActionIntent(
-                run_id=self.run_id,
-                workflow_id=self.workflow_id,
-                step_id=f"comp:{action.step_id}",
-                tool_name=comp.tool,
-                parameters=validation.bound_parameters,
-                is_compensation=True,
-            )
-            record.compensation_intent_id = comp_intent.intent_id
-
-            # WAL BEFORE side effect.
-            self.wal.write_intent(comp_intent, tier=2)
             self.wal.update_status(comp_intent.intent_id, WALStatus.COMPENSATING)
             self.audit.append(
                 AuditEvent.COMPENSATION_START,

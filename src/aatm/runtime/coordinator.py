@@ -11,6 +11,7 @@ issues a blind duplicate external side effect.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Callable, Optional
 from uuid import UUID, uuid4
@@ -38,12 +39,16 @@ from ..models import (
     WorkflowRun,
     utcnow,
 )
+from ..observability import Metrics, get_logger, log_event
+from ..storage.approvals import ApprovalStore
 from ..storage.audit_log import AuditLog
 from ..storage.checkpoints import CheckpointStore
+from ..storage.dead_letter import DeadLetterEntry, DeadLetterQueue
 from ..storage.idempotency import IdempotencyStore
 from ..storage.wal import WriteAheadLog
 from ..verification.post_conditions import PostconditionVerifier
 from ..adapters.failures import CrashSignal
+from .circuit_breaker import BreakerState, CircuitBreaker
 from .retry import backoff_delay_ms, is_retryable, sleep_backoff
 
 
@@ -73,6 +78,9 @@ class TransactionCoordinator:
         run_id: Optional[UUID] = None,
         approval_callback: Optional[ApprovalCallback] = None,
         backoff_scale: float = 0.001,
+        timeout_scale: float = 1.0,
+        circuit_breaker: Optional[CircuitBreaker] = None,
+        metrics: Optional[Metrics] = None,
     ) -> None:
         self.plan = plan
         self.registry = registry
@@ -81,6 +89,18 @@ class TransactionCoordinator:
         self.run_id = run_id or uuid4()
         self.approval_callback = approval_callback or auto_approve
         self.backoff_scale = backoff_scale
+        # Converts a step's timeout_ms into wall-clock seconds. Tests can shrink
+        # it to force fast timeouts deterministically.
+        self.timeout_scale = timeout_scale
+        # Per-tool circuit breaker (fail fast on repeatedly-failing tools).
+        self.breaker = circuit_breaker or CircuitBreaker(
+            failure_threshold=self.config.circuit_failure_threshold,
+            cooldown_s=self.config.circuit_cooldown_s,
+            half_open_trials=self.config.circuit_half_open_trials,
+        )
+        # Observability: metrics counters + structured logger.
+        self.metrics = metrics or Metrics()
+        self.logger = get_logger()
 
         # Storage
         self.wal = WriteAheadLog(self.config.wal_db_path(str(self.run_id)))
@@ -90,7 +110,15 @@ class TransactionCoordinator:
         self.idempotency = IdempotencyStore(
             self.config.idempotency_db_path(str(self.run_id))
         )
-        self.audit = AuditLog(self.config.audit_log_path(str(self.run_id)))
+        self.audit = AuditLog(self.config.audit_log_path(str(self.run_id)),
+                              secret_key=self.config.audit_hmac_key,
+                              redact=self.config.redact_pii)
+        self.dead_letter = DeadLetterQueue(
+            self.config.dead_letter_path(str(self.run_id))
+        )
+        self.approvals_store = ApprovalStore(
+            self.config.approval_path(str(self.run_id))
+        )
 
         self.verifier = PostconditionVerifier()
 
@@ -133,6 +161,8 @@ class TransactionCoordinator:
     async def run_workflow(self) -> WorkflowRun:
         start = time.perf_counter()
         self.run.state = WorkflowState.RUNNING
+        log_event(self.logger, "workflow.start", run_id=str(self.run_id),
+                  workflow=self.plan.workflow_id, steps=len(self.plan.steps))
         self.audit.append(
             AuditEvent.WORKFLOW_START,
             run_id=str(self.run_id),
@@ -177,6 +207,10 @@ class TransactionCoordinator:
             raise
 
         self.run.updated_at = utcnow()
+        self.metrics.observe_ms("workflow.duration_ms",
+                                (time.perf_counter() - start) * 1000.0)
+        log_event(self.logger, "workflow.stop", run_id=str(self.run_id),
+                  state=str(self.run.state), metrics=self.metrics.snapshot())
         return self.run
 
     # -- single step ----------------------------------------------------------
@@ -199,13 +233,17 @@ class TransactionCoordinator:
         if step.approval_required:
             self.run.state = WorkflowState.WAITING_APPROVAL
             step_exec.approval_state = ApprovalState.REQUESTED
+            # Durably record the request (survives a crash; visible to operators).
+            request_rec = self.approvals_store.request(
+                step.step_id, step.tool_name, self.config.approval_timeout_s
+            )
             self.audit.append(
                 AuditEvent.APPROVAL_REQUESTED,
                 run_id=str(self.run_id),
                 entity_id=step.step_id,
                 payload={"tool": step.tool_name, "tier": int(step.tier)},
             )
-            granted = self.approval_callback(step)
+            granted = self._resolve_approval(step, request_rec)
             if not granted:
                 step_exec.approval_state = ApprovalState.DENIED
                 self._approvals.append({"step_id": step.step_id, "granted": False})
@@ -243,6 +281,7 @@ class TransactionCoordinator:
             )
             if not is_new and existing is not None and existing.outcome == "success":
                 # Duplicate logical action already succeeded -> reuse result.
+                self.metrics.incr("duplicates_prevented")
                 step_exec.outcome = Outcome.SUCCESS
                 step_exec.final_status = IntentStatus.COMMITTED
                 step_exec.action_result = existing.result or {}
@@ -256,6 +295,10 @@ class TransactionCoordinator:
         while attempt < max_attempts:
             attempt += 1
             step_exec.attempt = attempt
+
+            # Circuit breaker: fail fast if this tool is currently tripped OPEN.
+            if not self.breaker.allow(step.tool_name):
+                return await self._on_circuit_open(step, step_exec, intent, attempt)
 
             # WAL intent BEFORE the side effect (durability invariant).
             if attempt == 1:
@@ -299,7 +342,7 @@ class TransactionCoordinator:
                 return False
 
             # Execute (crash may raise CrashSignal and propagate).
-            result = await adapter.execute(intent)
+            result = await self._execute_with_timeout(step, adapter, intent)
 
             # Mark pivot crossed once a Tier-3 pivot side effect commits.
             if result.is_success and step.is_pivot:
@@ -360,11 +403,13 @@ class TransactionCoordinator:
                 step_exec.retries = attempt - 1
                 self._retries += attempt - 1
                 step_exec.completed_at = utcnow()
+                self.breaker.record_success(step.tool_name)
                 self._mark_completed(step, intent, result.data)
                 return True
 
             if result.is_unknown:
                 self._unknowns += 1
+                self.metrics.incr("unknown_outcomes")
                 step_exec.outcome = Outcome.UNKNOWN
                 self.wal.update_status(intent.intent_id, WALStatus.UNKNOWN,
                                        outcome="unknown")
@@ -407,12 +452,43 @@ class TransactionCoordinator:
                              str(result.failure_class)},
                 )
                 self._retries += 1
+                self.metrics.incr("retries")
                 await sleep_backoff(step.retry, attempt, self.backoff_scale)
                 continue
             return handled == "continue"
 
         # Attempts exhausted without success.
         return await self._on_exhausted(step, step_exec, intent)
+
+    async def _execute_with_timeout(self, step, adapter, intent: ActionIntent):
+        """Run ``adapter.execute`` under a per-step deadline.
+
+        A per-step timeout is NOT proof the side effect did not happen: the
+        request may have reached the server. So a timeout is surfaced as an
+        UNKNOWN outcome, which routes into reconciliation (status query by
+        intent_id) rather than a blind retry.
+        """
+        timeout_s = (step.timeout_ms / 1000.0) * self.timeout_scale
+        if timeout_s <= 0:
+            return await adapter.execute(intent)
+        try:
+            return await asyncio.wait_for(adapter.execute(intent), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            self.audit.append(
+                AuditEvent.ACTION_UNKNOWN,
+                run_id=str(self.run_id),
+                entity_id=step.step_id,
+                payload={"tool": step.tool_name,
+                         "detail": f"step timeout after {step.timeout_ms}ms"},
+            )
+            from ..models import ToolResult
+
+            return ToolResult(
+                intent_id=intent.intent_id,
+                outcome=Outcome.UNKNOWN,
+                error_message=f"step timed out after {step.timeout_ms}ms",
+                failure_class=FailureClass.TIMEOUT,
+            )
 
     # -- failure handling -----------------------------------------------------
 
@@ -437,6 +513,17 @@ class TransactionCoordinator:
                          "failure_class": str(failure_class)},
             )
 
+        # Feed the circuit breaker; a trip is recorded for observability.
+        if self.breaker.record_failure(step.tool_name):
+            self.metrics.incr("circuit_trips")
+            self.audit.append(
+                AuditEvent.CIRCUIT_OPEN,
+                run_id=str(self.run_id),
+                entity_id=step.step_id,
+                payload={"tool": step.tool_name,
+                         "threshold": self.breaker.failure_threshold},
+            )
+
         # Retry if allowed and attempts remain.
         if attempt < max_attempts and is_retryable(failure_class, step.retry):
             return "retry"
@@ -449,6 +536,30 @@ class TransactionCoordinator:
         # Recover (pre-pivot compensation vs post-pivot forward recovery).
         await self._recover(reason="step_failure", failed_step=step)
         return "stop"
+
+    async def _on_circuit_open(self, step, step_exec, intent, attempt) -> bool:
+        """Fail fast without executing: the tool's breaker is OPEN."""
+        detail = f"circuit breaker open for tool '{step.tool_name}'; failing fast"
+        # Record a durable, traceable WAL entry for the skipped attempt.
+        if attempt == 1:
+            self.wal.write_intent(intent, tier=int(step.tier), pivot=step.is_pivot)
+        self.wal.update_status(
+            intent.intent_id, WALStatus.FAILED, outcome="failure",
+            error={"message": detail, "class": str(FailureClass.CIRCUIT_OPEN)},
+        )
+        self.audit.append(
+            AuditEvent.CIRCUIT_OPEN,
+            run_id=str(self.run_id),
+            entity_id=step.step_id,
+            payload={"tool": step.tool_name, "state": str(self.breaker.state(
+                step.tool_name)), "action": "fail_fast"},
+        )
+        step_exec.outcome = Outcome.FAILURE
+        step_exec.final_status = IntentStatus.FAILED
+        step_exec.detail = detail
+        step_exec.completed_at = utcnow()
+        await self._recover(reason="circuit_open", failed_step=step)
+        return False
 
     async def _on_exhausted(self, step, step_exec, intent) -> bool:
         step_exec.outcome = Outcome.FAILURE
@@ -471,6 +582,7 @@ class TransactionCoordinator:
         )
         query = await adapter.query_status(intent.intent_id)
         step_exec.reconciled = True
+        self.metrics.incr("reconciliations")
 
         if query.found and query.outcome == Outcome.SUCCESS:
             # The side effect DID happen. Commit the original intent.
@@ -499,6 +611,7 @@ class TransactionCoordinator:
             step_exec.final_status = IntentStatus.COMMITTED
             step_exec.action_result = query.data
             step_exec.completed_at = utcnow()
+            self.breaker.record_success(step.tool_name)
             self._mark_completed(step, intent, query.data)
             return "success"
 
@@ -547,12 +660,26 @@ class TransactionCoordinator:
         for action in ordered:
             record = await engine.execute_compensation(action)
             self.run.compensations.append(record)
+            self.metrics.incr("compensations_executed")
             if record.outcome == Outcome.FAILURE:
+                self.metrics.incr("compensations_failed")
                 if record.strategy == CompensationStrategy.MANUAL_ESCALATION:
                     any_inconsistent = True
                 else:
                     any_failed = True
                     any_inconsistent = True
+                # Durably record the unrecoverable compensation so an operator
+                # can drain it later instead of it being silently lost.
+                self.dead_letter.append(DeadLetterEntry(
+                    run_id=str(self.run_id),
+                    step_id=record.source_step_id,
+                    tool=action.compensation.tool if action.compensation else None,
+                    strategy=str(record.strategy),
+                    reason=record.detail or "compensation failed",
+                    residual_risk=list(record.residual_risk),
+                    intent_id=(str(record.compensation_intent_id)
+                               if record.compensation_intent_id else None),
+                ))
 
         if post_pivot:
             self.run.detail = (
@@ -580,6 +707,32 @@ class TransactionCoordinator:
             )
 
     # -- helpers --------------------------------------------------------------
+
+    def _resolve_approval(self, step, request_rec: dict[str, Any]) -> bool:
+        """Decide a Tier-3 approval durably.
+
+        Precedence: (1) an out-of-band decision already recorded in the store
+        wins; (2) otherwise, if the request has expired, fail safe by DENYING;
+        (3) otherwise consult the in-process approval callback. The final decision
+        is always persisted.
+        """
+        existing = self.approvals_store.latest_decision(step.step_id)
+        if existing is not None:
+            return bool(existing.get("granted"))
+
+        if ApprovalStore.is_expired(request_rec):
+            self.approvals_store.decide(
+                step.step_id, False, decided_by="timeout",
+                reason="approval deadline passed; fail-safe deny",
+            )
+            return False
+
+        granted = self.approval_callback(step)
+        self.approvals_store.decide(
+            step.step_id, granted, decided_by="callback",
+            reason="" if granted else "denied by approval policy",
+        )
+        return granted
 
     def _build_intent(self, step) -> ActionIntent:
         idem_key = self._resolve_idem_key(step)

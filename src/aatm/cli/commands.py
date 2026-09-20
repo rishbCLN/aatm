@@ -143,7 +143,7 @@ def cmd_verify_audit(args, config: AATMConfig) -> int:
     if not path.exists():
         _print_err(f"audit log not found for run {args.run_id}")
         return 1
-    result = verify_audit_chain(path)
+    result = verify_audit_chain(path, secret_key=config.audit_hmac_key)
     status = "VALID" if result.valid else "INVALID"
     print(f"Audit chain: {status}")
     print(f"Entries:     {result.entry_count}")
@@ -197,6 +197,50 @@ def cmd_list_runs(args, config: AATMConfig) -> int:
     return 0
 
 
+def cmd_approve(args, config: AATMConfig) -> int:
+    from ..storage.approvals import ApprovalStore
+
+    store = ApprovalStore(config.approval_path(args.run_id))
+    granted = args.command == "approve"
+    store.decide(args.step, granted, decided_by=args.by,
+                 reason=args.reason or "")
+    verb = "GRANTED" if granted else "DENIED"
+    print(f"Approval {verb} for run {args.run_id} step {args.step} (by {args.by}).")
+    return 0
+
+
+def cmd_serve(args, config: AATMConfig) -> int:  # pragma: no cover
+    from ..service import serve
+
+    print(f"AATM service on http://{args.host}:{args.port} "
+          f"(Ctrl-C to stop)")
+    serve(host=args.host, port=args.port, config=config)
+    return 0
+
+
+def cmd_approvals(args, config: AATMConfig) -> int:
+    from ..storage.approvals import ApprovalStore
+
+    store = ApprovalStore(config.approval_path(args.run_id))
+    entries = store.entries()
+    if not entries:
+        print(f"No approval records for run {args.run_id}.")
+        return 0
+    print(f"Approval log for run {args.run_id}:")
+    for e in entries:
+        if e.get("kind") == "request":
+            print(f"  REQUEST  {e['step_id']:10s} {e.get('tool','')}"
+                  f"  deadline={e.get('deadline','')}")
+        else:
+            verb = "GRANT" if e.get("granted") else "DENY "
+            print(f"  {verb}    {e['step_id']:10s} by={e.get('decided_by','')}"
+                  f"  {e.get('reason','')}")
+    pending = store.pending()
+    if pending:
+        print(f"Pending: {', '.join(p['step_id'] for p in pending)}")
+    return 0
+
+
 def cmd_inspect_run(args, config: AATMConfig) -> int:
     path = config.audit_log_path(args.run_id)
     if not path.exists():
@@ -204,7 +248,7 @@ def cmd_inspect_run(args, config: AATMConfig) -> int:
         return 1
     from ..storage.audit_log import AuditLog
 
-    log = AuditLog(path)
+    log = AuditLog(path, secret_key=config.audit_hmac_key)
     entries = log.entries()
     print(f"Run {args.run_id}: {len(entries)} audit events")
     for e in entries:
@@ -261,6 +305,24 @@ def build_parser() -> argparse.ArgumentParser:
     ir = sub.add_parser("inspect-run", help="Dump a run's audit events.")
     ir.add_argument("--run-id", required=True)
     ir.set_defaults(func=cmd_inspect_run)
+
+    for verb in ("approve", "deny"):
+        ap = sub.add_parser(verb, help=f"{verb.capitalize()} a pending Tier-3 "
+                            "approval (out-of-band).")
+        ap.add_argument("--run-id", required=True)
+        ap.add_argument("--step", required=True, help="step id to decide")
+        ap.add_argument("--by", default="operator", help="who decided")
+        ap.add_argument("--reason", default="", help="optional reason")
+        ap.set_defaults(func=cmd_approve)
+
+    al = sub.add_parser("approvals", help="Show a run's approval log.")
+    al.add_argument("--run-id", required=True)
+    al.set_defaults(func=cmd_approvals)
+
+    sv = sub.add_parser("serve", help="Run the local HTTP API (dev/service mode).")
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8080)
+    sv.set_defaults(func=cmd_serve)
 
     return p
 

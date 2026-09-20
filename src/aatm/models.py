@@ -249,6 +249,7 @@ class PlannedStep(BaseModel):
     compensation: Optional[CompensationPlan] = None
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     risk_flags: list[str] = Field(default_factory=list)
+    timeout_ms: int = 5000
 
 
 class FailurePolicy(BaseModel):

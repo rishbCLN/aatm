@@ -61,7 +61,8 @@ class EvidenceReport:
         unknown_outcomes: int = 0,
         approvals: Optional[list[dict[str, Any]]] = None,
     ) -> RunResult:
-        audit = AuditLog(self.config.audit_log_path(str(run.run_id)))
+        audit = AuditLog(self.config.audit_log_path(str(run.run_id)),
+                         secret_key=self.config.audit_hmac_key)
         chain = audit.verify()
 
         residual_risks: list[str] = []
@@ -119,17 +120,25 @@ class EvidenceReport:
         unknown_outcomes: int = 0,
         approvals: Optional[list[dict[str, Any]]] = None,
         experiment: Optional[dict[str, Any]] = None,
+        metrics: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         result = self.build_result(
             run, plan=plan, world_summary=world_summary, duration_ms=duration_ms,
             retries=retries, unknown_outcomes=unknown_outcomes, approvals=approvals,
         )
-        audit = AuditLog(self.config.audit_log_path(str(run.run_id)))
+        audit = AuditLog(self.config.audit_log_path(str(run.run_id)),
+                         secret_key=self.config.audit_hmac_key)
         breakdown = self.scorer.score(result, audit)
         explanation = self.explainer.explain(run, pivot_step_id=run.pivot_step_id)
         evaluation = self.explainer.evaluate(run)
 
         tool_inventory = self._tool_inventory(plan)
+
+        # Durable dead-letter queue (unrecoverable compensations, if any).
+        from ..storage.dead_letter import DeadLetterQueue
+
+        dlq = DeadLetterQueue(self.config.dead_letter_path(str(run.run_id)))
+        dead_letters = dlq.entries()
 
         report = {
             "meta": {
@@ -144,7 +153,17 @@ class EvidenceReport:
             "tool_inventory": tool_inventory,
             "experiment": experiment or {},
             "audit_chain": audit.verify().to_dict(),
+            "metrics": metrics or {},
+            "dead_letters": dead_letters,
         }
+
+        # Redact PII/secrets before the report is written or rendered. Audit
+        # hashes/UUIDs are preserved (see redaction heuristics), so the audit
+        # chain summary stays intact.
+        if self.config.redact_pii:
+            from ..redaction import Redactor
+
+            report = Redactor(enabled=True).redact(report)
 
         # Write JSON.
         json_path = self.config.report_json_path(str(run.run_id))
