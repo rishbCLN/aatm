@@ -73,3 +73,17 @@ async def test_flow_html_renders_and_writes(tmp_config):
     content = path.read_text(encoding="utf-8")
     assert "<script>" in content
     assert "src=\"http" not in content  # no external JS dependency
+
+
+async def test_flow_html_embeds_replay_scrubber(tmp_config):
+    """The flow view ships a deterministic-replay timeline for time-travel."""
+    _engine, out, rep = await _run_report(
+        tmp_config, injection="injections/step3_failure.yaml")
+    path = FlowVisualizer(tmp_config).from_report_dict(rep, str(out.run.run_id))
+    content = path.read_text(encoding="utf-8")
+    # The scrubber UI + the embedded, non-empty replay frame array are present.
+    assert 'id="scrub"' in content
+    assert "const REPLAY = [" in content
+    assert "initScrubber()" in content
+    # Frames reconstruct real events from this run (e.g. the compensation).
+    assert "COMPENSATION" in content

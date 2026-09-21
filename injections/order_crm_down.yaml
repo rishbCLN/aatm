@@ -1,0 +1,9 @@
+# Forward-escalation scenario: the RETRYABLE post-pivot CRM sync (step-3) never
+# succeeds. Expected: charge (pivot) stands, step-3 is escalated FORWARD, the run
+# is INCONSISTENT, and a dead-letter entry is recorded for `aatm redrive`.
+enabled: true
+rules:
+  - mode: error
+    step: step-3
+    failure_class: server_error
+    message: CRM_DOWN

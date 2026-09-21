@@ -5,6 +5,7 @@
     "fully_reversible": 1,
     "compensatable": 2,
     "irreversible": 3,
+    "retryable": 1,
     "unknown": 3
   },
   "unknown_tool_defaults": {

@@ -16,7 +16,7 @@
     },
     "reversibility": {
       "type": "string",
-      "enum": ["fully_reversible", "compensatable", "irreversible", "unknown"]
+      "enum": ["fully_reversible", "compensatable", "irreversible", "retryable", "unknown"]
     },
     "idempotent": {"type": "boolean"},
     "idempotency_mode": {"type": "string", "enum": ["native", "wrapper", "none"]},

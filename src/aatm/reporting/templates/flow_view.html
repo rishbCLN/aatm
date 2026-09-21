@@ -45,6 +45,21 @@
     .node.compensated { border-color:var(--comp); }
     .node.not_reached { border-color:var(--line); opacity:.5; }
     .node.pending { border-color:var(--muted); }
+    .node.running { border-color:var(--accent); box-shadow:0 0 0 3px rgba(88,166,255,.2); }
+    .node.skipped { border-color:var(--ok); border-style:dashed; }
+
+    /* Time-travel scrubber */
+    .scrub { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+      padding:14px 18px; margin:10px 0 4px; }
+    .scrub .ctl { display:flex; align-items:center; gap:12px; }
+    .scrub input[type=range] { flex:1; accent-color:var(--accent); }
+    .scrub button { background:var(--panel2); color:var(--fg); border:1px solid var(--line);
+      border-radius:6px; padding:5px 12px; cursor:pointer; font-size:13px; }
+    .scrub button:hover { border-color:var(--accent); }
+    .scrub .info { margin-top:10px; font-size:13px; display:flex; flex-wrap:wrap; gap:8px 18px; }
+    .scrub .info .ev { font-family:ui-monospace,Consolas,monospace; color:var(--accent); }
+    .scrub .info .st { font-weight:600; }
+    .scrub .note { color:var(--muted); margin-top:4px; font-size:13px; }
     .node.is-break { outline:3px dashed var(--bad); outline-offset:3px; }
     .node .sid { font-size:11px; color:var(--muted); }
     .node .nm { font-size:13px; font-weight:600; margin:2px 0; }
@@ -143,6 +158,27 @@
   <p class="sub">Click any step to inspect its execution detail. Compensation is a
     semantic forward action (reverse completion order), not a physical undo.</p>
 
+  <!-- Time-travel replay scrubber (deterministic reconstruction from the audit log) -->
+  <div class="scrub" id="scrub" style="display:none">
+    <div class="ctl">
+      <button id="scrub-reset" title="Back to start">&#8676;</button>
+      <input type="range" id="scrub-range" min="0" max="0" value="0" step="1">
+      <button id="scrub-live" title="Jump to final state">Live &#8677;</button>
+    </div>
+    <div class="info">
+      <span>seq <span class="ev" id="scrub-seq">-</span></span>
+      <span class="ev" id="scrub-event">-</span>
+      <span>workflow <span class="st" id="scrub-state">-</span></span>
+      <span id="scrub-pivot" class="muted">pivot: no</span>
+      <span id="scrub-effects" class="muted">side-effects: 0</span>
+    </div>
+    <div class="note" id="scrub-note"></div>
+    <p class="sub" style="margin:6px 0 0">Drag to replay the run event-by-event.
+      State is reconstructed deterministically from the immutable audit log; nodes
+      recolor to their status <em>as of</em> that moment. Read-only - nothing is
+      re-executed.</p>
+  </div>
+
   <div class="disclaimer">
     Analysis is derived from the recorded execution trace (WAL + audit + world
     state). It reports observed engineering behavior, not a guarantee of zero risk
@@ -171,6 +207,7 @@
       col.className = "col";
       const card = document.createElement("div");
       card.className = "node " + n.status + (n.step_id === MODEL.analysis.break_step ? " is-break" : "");
+      card.dataset.sid = n.step_id;
       card.onclick = () => openDrawer(n.step_id);
       let tags = `<span class="tag ${tierClass(n.tier)}">T${n.tier}</span>`;
       tags += `<span class="tag st">${n.status.replace('_',' ')}</span>`;
@@ -240,7 +277,62 @@
   function closeDrawer(){ document.getElementById("drawer").classList.remove("open"); }
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
 
+  // --- Time-travel replay scrubber ----------------------------------------
+  const REPLAY = {{ replay_json | safe }};
+  // Map replay step statuses onto the node CSS classes used by the diagram.
+  const STATUS_CLASS = { pending:"pending", running:"running", success:"success",
+    failure:"failure", unknown:"unknown", compensated:"compensated",
+    skipped:"skipped" };
+  const NODE_CLASSES = ["success","failure","unknown","compensated","not_reached",
+    "pending","running","skipped"];
+
+  function nodeCardFor(sid){
+    return document.querySelector('.node[data-sid="' + CSS.escape(sid) + '"]');
+  }
+
+  function applyFrame(frame){
+    // Recolor every node to its status as of this frame (or not_reached).
+    MODEL.nodes.forEach(n => {
+      const card = nodeCardFor(n.step_id);
+      if (!card) return;
+      const st = frame.steps[n.step_id];
+      const cls = st ? (STATUS_CLASS[st.status] || "pending") : "not_reached";
+      NODE_CLASSES.forEach(c => card.classList.remove(c));
+      card.classList.add(cls);
+    });
+    document.getElementById("scrub-seq").textContent = frame.seq;
+    document.getElementById("scrub-event").textContent = frame.event +
+      (frame.entity_id ? " (" + frame.entity_id + ")" : "");
+    const stEl = document.getElementById("scrub-state");
+    stEl.textContent = frame.workflow_state;
+    stEl.className = "st " + ({COMPLETED:"ok",INCONSISTENT:"bad",ABORTED:"bad",
+      TIMED_OUT:"bad",RECOVERING:"warn"}[frame.workflow_state] || "");
+    document.getElementById("scrub-pivot").textContent =
+      "pivot: " + (frame.pivot_crossed ? "yes" : "no");
+    document.getElementById("scrub-effects").textContent =
+      "side-effects: " + frame.side_effects;
+    document.getElementById("scrub-note").textContent = frame.note || "";
+  }
+
+  function initScrubber(){
+    if (!REPLAY || REPLAY.length === 0) return;
+    const panel = document.getElementById("scrub");
+    panel.style.display = "";
+    const range = document.getElementById("scrub-range");
+    range.max = REPLAY.length - 1;
+    range.value = REPLAY.length - 1;  // start "live" (final state)
+    range.addEventListener("input", () => applyFrame(REPLAY[+range.value]));
+    document.getElementById("scrub-reset").onclick = () => {
+      range.value = 0; applyFrame(REPLAY[0]);
+    };
+    document.getElementById("scrub-live").onclick = () => {
+      range.value = REPLAY.length - 1; applyFrame(REPLAY[REPLAY.length - 1]);
+    };
+    // Leave the diagram on its final/report-derived colors initially.
+  }
+
   renderFlow();
+  initScrubber();
 </script>
 </body>
 </html>

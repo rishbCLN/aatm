@@ -184,6 +184,19 @@ class SagaPlanner:
                 source_step_id=step.step_id,
             )
 
+        # 1a) Retryable steps are driven FORWARD to completion, never compensated.
+        # An explicit step-level compensation (handled above) still wins; but a
+        # retryable classification otherwise means "no compensation" (not manual
+        # escalation), so it is not treated as an unrecoverable Tier-2 gap.
+        if step.reversibility == Reversibility.RETRYABLE:
+            return CompensationPlan(
+                strategy=CompensationStrategy.NONE,
+                source=CompensationSource.NONE,
+                confidence=1.0,
+                risks=["Retryable step: recovered by forward retry, not compensation"],
+                source_step_id=step.step_id,
+            )
+
         # 1b) Explicit compensation contract on the workflow tool block.
         if explicit_tool and isinstance(
             explicit_tool.get("compensation_contract"), dict

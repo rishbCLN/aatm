@@ -22,15 +22,19 @@ from ..config import AATMConfig, default_config
 from ..enums import (
     ApprovalState,
     AuditEvent,
+    CompensationSource,
+    CompensationStrategy,
     FailureClass,
     IntentStatus,
     Outcome,
+    Reversibility,
     Tier,
     WALStatus,
     WorkflowState,
 )
 from ..models import (
     ActionIntent,
+    CompensationExecution,
     SagaPlan,
     StepExecution,
     WorkflowRun,
@@ -42,7 +46,7 @@ from ..storage.audit_log import AuditLog
 from ..storage.checkpoints import CheckpointStore
 from ..storage.dead_letter import DeadLetterEntry, DeadLetterQueue
 from ..storage.idempotency import IdempotencyStore
-from ..storage.wal import WriteAheadLog
+from ..storage.wal import WALEntry, WriteAheadLog
 from ..verification.post_conditions import PostconditionVerifier
 from ..adapters.failures import CrashSignal
 from .circuit_breaker import CircuitBreaker
@@ -176,10 +180,61 @@ class TransactionCoordinator:
             },
         )
 
-        deadline = start + self.plan.timeout_seconds
+        await self._run_step_loop(start, skip_committed=set())
 
+        self.run.updated_at = utcnow()
+        self.metrics.observe_ms("workflow.duration_ms",
+                                (time.perf_counter() - start) * 1000.0)
+        log_event(self.logger, "workflow.stop", run_id=str(self.run_id),
+                  state=str(self.run.state), metrics=self.metrics.snapshot())
+        return self.run
+
+    async def resume_workflow(self) -> WorkflowRun:
+        """Resume a crashed run FORWARD from durable state (Feature: resume-forward).
+
+        Inspired by DBOS ``fork_workflow``/resume: instead of only reconciling the
+        crashed intent and stopping, we rebuild the coordinator's state from the
+        WAL + latest checkpoint, SKIP the steps that already committed (their side
+        effects are durable), and drive the remaining steps forward to completion.
+
+        Prerequisite: crash reconciliation (``RecoveryManager.recover``) has already
+        run so every non-terminal WAL intent is now COMMITTED or FAILED. The mock
+        world must already reflect the authoritative external state (the engine
+        loads the persisted world file before calling this).
+        """
+        start = time.perf_counter()
+        already = self._seed_from_durable_state()
+        self.run.state = WorkflowState.RUNNING
+        log_event(self.logger, "workflow.resume", run_id=str(self.run_id),
+                  workflow=self.plan.workflow_id, already_committed=len(already))
+        self.audit.append(
+            AuditEvent.WORKFLOW_RESUMED,
+            run_id=str(self.run_id),
+            entity_id=self.plan.workflow_id,
+            payload={"already_committed": sorted(already),
+                     "pivot_crossed": self.run.pivot_crossed},
+        )
+
+        await self._run_step_loop(start, skip_committed=already)
+
+        self.run.updated_at = utcnow()
+        self.metrics.observe_ms("workflow.duration_ms",
+                                (time.perf_counter() - start) * 1000.0)
+        log_event(self.logger, "workflow.stop", run_id=str(self.run_id),
+                  state=str(self.run.state), metrics=self.metrics.snapshot())
+        return self.run
+
+    async def _run_step_loop(self, start: float, *, skip_committed: set) -> None:
+        """Shared execution loop for a fresh run and a forward resume."""
+        deadline = start + self.plan.timeout_seconds
         try:
             for step in self.plan.steps:
+                if step.step_id in skip_committed:
+                    # Already committed in a prior (crashed) session: its side
+                    # effect is durable, so we must NOT re-execute it.
+                    self._record_resumed_step(step)
+                    continue
+
                 if time.perf_counter() > deadline:
                     self.run.state = WorkflowState.TIMED_OUT
                     self.run.detail = "workflow timeout reached"
@@ -190,7 +245,7 @@ class TransactionCoordinator:
                 if not proceed:
                     break
             else:
-                # All steps completed.
+                # All steps completed (or were already committed).
                 self.run.state = WorkflowState.COMPLETED
                 self.audit.append(
                     AuditEvent.WORKFLOW_COMPLETE,
@@ -202,13 +257,6 @@ class TransactionCoordinator:
             # Propagate crash to the caller (used by crash-recovery tests/CLI).
             self.run.updated_at = utcnow()
             raise
-
-        self.run.updated_at = utcnow()
-        self.metrics.observe_ms("workflow.duration_ms",
-                                (time.perf_counter() - start) * 1000.0)
-        log_event(self.logger, "workflow.stop", run_id=str(self.run_id),
-                  state=str(self.run.state), metrics=self.metrics.snapshot())
-        return self.run
 
     # -- single step ----------------------------------------------------------
 
@@ -521,8 +569,14 @@ class TransactionCoordinator:
                          "threshold": self.breaker.failure_threshold},
             )
 
-        # Retry if allowed and attempts remain.
-        if attempt < max_attempts and is_retryable(failure_class, step.retry):
+        # Retry if attempts remain. A RETRYABLE step is driven FORWARD to
+        # completion, so it retries regardless of failure class (saga theory:
+        # retryable transactions must eventually succeed). Other steps retry only
+        # for transient/allowed failure classes.
+        retryable_step = step.reversibility == Reversibility.RETRYABLE
+        if attempt < max_attempts and (
+            retryable_step or is_retryable(failure_class, step.retry)
+        ):
             return "retry"
 
         step_exec.outcome = Outcome.FAILURE
@@ -530,9 +584,74 @@ class TransactionCoordinator:
         step_exec.detail = detail
         step_exec.completed_at = utcnow()
 
+        # A retryable step that exhausted its retries AFTER the pivot must NOT
+        # unwind committed pivot work. Escalate FORWARD: surface the run as
+        # business-inconsistent and dead-letter the step for an operator to
+        # complete, but never refund/cancel the irreversible work behind it.
+        if retryable_step and self.run.pivot_crossed:
+            await self._escalate_forward(step, detail)
+            return "stop"
+
         # Recover (pre-pivot compensation vs post-pivot forward recovery).
         await self._recover(reason="step_failure", failed_step=step)
         return "stop"
+
+    async def _escalate_forward(self, step, detail: str) -> None:
+        """Escalate a post-pivot retryable step that could not complete.
+
+        Forward-only recovery: the committed pivot side effect STANDS. We do not
+        compensate anything (that would undo irreversible work). Instead we record
+        a durable dead-letter entry + a surfaced residual risk and mark the run
+        INCONSISTENT so an operator can drive the step to completion by hand.
+        """
+        self.run.state = WorkflowState.RECOVERING
+        risk = (
+            f"Retryable step '{step.step_id}' ({step.tool_name}) did not complete "
+            f"after {step.retry.max_attempts} forward attempt(s): {detail}. The "
+            "committed pivot work is preserved; this step needs manual completion "
+            "(no rollback is possible or appropriate)."
+        )
+        # Surface as a failed compensation record so residual risk + recovery
+        # status flow through the existing report/flow model unchanged.
+        record = CompensationExecution(
+            source_step_id=step.step_id,
+            source=CompensationSource.NONE,
+            strategy=CompensationStrategy.FORWARD_FIX,
+            outcome=Outcome.FAILURE,
+            residual_risk=[risk],
+            detail="forward retry exhausted; escalated for manual completion",
+        )
+        self.run.compensations.append(record)
+        self.metrics.incr("forward_escalations")
+        self.dead_letter.append(DeadLetterEntry(
+            run_id=str(self.run_id),
+            step_id=step.step_id,
+            tool=step.tool_name,
+            strategy="forward_retry",
+            reason=detail,
+            residual_risk=[risk],
+            intent_id=None,
+            params=dict(step.parameters),
+        ))
+        self.audit.append(
+            AuditEvent.ESCALATION,
+            run_id=str(self.run_id),
+            entity_id=step.step_id,
+            payload={"reason": "forward_retry_exhausted", "tool": step.tool_name,
+                     "risks": [risk]},
+        )
+        self.run.state = WorkflowState.INCONSISTENT
+        self.run.detail = (
+            f"post-pivot retryable step '{step.step_id}' unresolved after retries; "
+            "committed work preserved, escalated for manual completion "
+            "(forward-only, no rollback)."
+        )
+        self.audit.append(
+            AuditEvent.WORKFLOW_INCONSISTENT,
+            run_id=str(self.run_id),
+            entity_id=self.plan.workflow_id,
+            payload={"reason": "forward_retry_exhausted", "step_id": step.step_id},
+        )
 
     async def _on_circuit_open(self, step, step_exec, intent, attempt) -> bool:
         """Fail fast without executing: the tool's breaker is OPEN."""
@@ -795,3 +914,58 @@ class TransactionCoordinator:
                     completion_order=self._completion_counter,
                 )
             )
+
+    # -- resume-forward (crash recovery continuation) -------------------------
+
+    def _seed_from_durable_state(self) -> set:
+        """Rebuild in-memory state from the WAL + latest checkpoint for a resume.
+
+        Returns the set of step_ids that already COMMITTED (to be skipped). Only
+        the LAST WAL entry per step decides its status, and compensation tracking
+        is rebuilt in plan order so a later failure can still unwind prior work.
+        """
+        # Latest committed status + result per step (last WAL write wins).
+        last: dict[str, WALEntry] = {}
+        for entry in self.wal.entries_for_run(self.run_id):
+            if entry.is_compensation:
+                continue
+            last[entry.step_id] = entry
+        committed = {sid for sid, e in last.items()
+                     if e.status == WALStatus.COMMITTED.value}
+
+        # Restore variables from the latest checkpoint (best-effort).
+        snap = self.checkpoints.latest_for_run(self.run_id)
+        if snap is not None and snap.variables:
+            self.run.variables.update(snap.variables)
+
+        # Rebuild completion + compensation tracking in plan (topological) order.
+        for step in self.plan.steps:
+            if step.step_id not in committed:
+                continue
+            entry = last[step.step_id]
+            result = entry.result or {}
+            if entry.pivot:
+                self.run.pivot_crossed = True
+            self._mark_completed(step, self._build_intent(step), result)
+        return committed
+
+    def _record_resumed_step(self, step) -> None:
+        """Record a skipped-but-already-committed step in the run for evidence."""
+        step_exec = StepExecution(
+            step_id=step.step_id,
+            tier=step.tier,
+            is_pivot=step.is_pivot,
+            is_post_pivot=step.is_post_pivot,
+            started_at=utcnow(),
+        )
+        step_exec.outcome = Outcome.SUCCESS
+        step_exec.final_status = IntentStatus.COMMITTED
+        step_exec.detail = "resumed: already committed in a prior session (not re-run)"
+        step_exec.completed_at = utcnow()
+        self.run.step_executions.append(step_exec)
+        self.audit.append(
+            AuditEvent.STEP_SKIPPED_RESUME,
+            run_id=str(self.run_id),
+            entity_id=step.step_id,
+            payload={"tool": step.tool_name},
+        )

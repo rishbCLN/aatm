@@ -1,0 +1,103 @@
+workflow:
+  id: wf-order-001
+  name: Order Fulfillment
+  description: >
+    Reserve an order, charge the customer (the pivot), then sync the CRM. The CRM
+    sync is a RETRYABLE step: it must eventually succeed and is driven FORWARD on
+    failure. Unlike travel_booking (where a post-pivot failure unwinds everything),
+    a retryable post-pivot step is retried to completion and, if it still cannot
+    complete, is escalated forward (INCONSISTENT + dead-letter) WITHOUT refunding
+    the committed charge.
+  agent: order-fulfillment-agent
+  max_steps: 3
+  timeout_seconds: 60
+  failure_policy:
+    on_step_failure: compensate_and_abort
+    on_compensation_failure: escalate_human
+    on_unknown_outcome: query_and_reconcile
+    max_compensation_retries: 3
+
+steps:
+  - id: step-1
+    name: Reserve Order
+    tool: create_database_record
+    parameters:
+      user_id: cust-9001
+      sku: WIDGET-42
+      qty: 3
+    depends_on: []
+    postconditions:
+      - expression: result.status == 'active'
+        on_failure: compensate
+    idempotency_key: "user_id|sku"
+    retry:
+      max_attempts: 2
+      backoff: exponential
+      backoff_ms: 200
+      retry_on: [timeout, rate_limit]
+
+  - id: step-2
+    name: Charge Customer
+    tool: charge_payment
+    parameters:
+      user_id: cust-9001
+      amount: 1299
+      currency: USD
+    depends_on: [step-1]
+    is_pivot: true
+    approval_required: true
+    postconditions:
+      - expression: result.payment_status == 'captured'
+        on_failure: retry
+    idempotency_key: "user_id|amount|order-9001"
+    retry:
+      max_attempts: 1
+      backoff: none
+      retry_on: []
+
+  - id: step-3
+    name: Sync CRM (retryable, forward-only)
+    tool: update_crm
+    parameters:
+      user_id: cust-9001
+      order: order-9001
+    depends_on: [step-2]
+    postconditions:
+      - expression: result.status == 'active'
+        on_failure: retry
+    retry:
+      max_attempts: 3
+      backoff: exponential
+      backoff_ms: 150
+      retry_on: [timeout, rate_limit, server_error]
+
+variables:
+  - name: user_id
+    type: string
+    initial_value: cust-9001
+
+tools:
+  - name: create_database_record
+    description: Reserve the order as an internal DB record
+    side_effect_scope: internal
+    reversibility: compensatable
+    idempotent: false
+    idempotency_mode: wrapper
+    timeout_ms: 4000
+    compensation_contract:
+      tool: delete_database_record
+      parameter_mapping:
+        record_id: result.record_id
+      strategy: compensate
+  # update_crm is declared RETRYABLE: post-pivot, it is driven forward to
+  # completion and never triggers an unwind of the committed charge.
+  - name: update_crm
+    description: Sync the order to the CRM (must eventually succeed)
+    side_effect_scope: internal
+    reversibility: retryable
+    idempotent: false
+    idempotency_mode: wrapper
+    timeout_ms: 4000
+
+failure_injection:
+  enabled: true

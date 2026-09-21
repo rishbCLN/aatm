@@ -143,6 +143,65 @@ def cmd_recover(args, config: AATMConfig) -> int:
     return 0
 
 
+def cmd_resume(args, config: AATMConfig) -> int:
+    engine = AATMEngine(config)
+    approval = _approval_policy(args.deny_pivot)
+    try:
+        report, output = asyncio.run(
+            engine.resume(
+                args.workflow, args.run_id,
+                approval_callback=approval,
+                backoff_scale=0.0 if args.fast else 0.001,
+            )
+        )
+    except WorkflowParseError as exc:
+        _print_err(exc.message)
+        for d in exc.errors:
+            print(f"  - {d}", file=sys.stderr)
+        return 2
+    except EngineError as exc:
+        _print_err(str(exc))
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        _print_err(f"resume failed: {exc}")
+        return 1
+
+    print("RESUME-FORWARD")
+    print("-" * 40)
+    print(f"Run:                 {report.run_id}")
+    print(f"Reconciled intents:  {report.pending_found}")
+    print(f"Duplicates prevented:{report.duplicates_prevented}")
+    print()
+    use_color = False if args.no_color else None
+    print(render_run(output.run, output.plan, use_color=use_color))
+    print(f"\nFinal state: {output.run.state}")
+    if args.report:
+        rep = engine.report(output, experiment={"resumed": True})
+        print(f"Report (JSON): {rep['_paths']['json']}")
+        print(f"Assessment:    {rep['score']['status']} ({rep['score']['total']}/100)")
+    return 0
+
+
+def cmd_redrive(args, config: AATMConfig) -> int:
+    engine = AATMEngine(config)
+    try:
+        report = asyncio.run(engine.redrive(args.run_id))
+    except Exception as exc:  # noqa: BLE001
+        _print_err(f"redrive failed: {exc}")
+        return 1
+    print("DEAD-LETTER REDRIVE")
+    print("-" * 40)
+    print(f"Run:           {report.run_id}")
+    print(f"Open before:   {report.open_before}")
+    print(f"Resolved:      {report.resolved}")
+    print(f"Still failed:  {report.still_failed}")
+    for a in report.attempts:
+        mark = "OK " if a.resolution == "resolved" else "!! "
+        print(f"  {mark}{a.step_id:10s} {a.tool or '-':18s} {a.detail}")
+    # Non-zero exit if anything remains unresolved (useful for scripting).
+    return 0 if report.still_failed == 0 else 1
+
+
 def cmd_verify_audit(args, config: AATMConfig) -> int:
     path = config.audit_log_path(args.run_id)
     if not path.exists():
@@ -157,6 +216,47 @@ def cmd_verify_audit(args, config: AATMConfig) -> int:
         print(f"Broken at seq: {result.broken_seq}")
         return 1
     return 0
+
+
+def cmd_replay(args, config: AATMConfig) -> int:
+    from ..replay import ReplayEngine
+
+    path = config.audit_log_path(args.run_id)
+    if not path.exists():
+        _print_err(f"audit log not found for run {args.run_id}")
+        return 1
+    result = ReplayEngine(config).replay(args.run_id, to_seq=args.to_seq)
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, default=str))
+        return 0 if result.chain_valid else 1
+
+    chain = "VALID" if result.chain_valid else f"INVALID ({result.chain_detail})"
+    target = "end" if args.to_seq is None else f"seq {args.to_seq}"
+    print("DETERMINISTIC REPLAY")
+    print("-" * 60)
+    print(f"Run:          {result.run_id}")
+    print(f"Audit chain:  {chain}  ({result.total_events} events)")
+    print(f"Replaying to: {target}  ({len(result.frames)} event(s) applied)")
+    print()
+    print("TIMELINE")
+    for f in result.frames:
+        ent = f".{f.entity_id}" if f.entity_id else ""
+        print(f"  {f.seq:>3}  {f.event:<22}{ent:<12}  {f.note}")
+
+    frame = result.final_frame
+    if frame is not None:
+        print()
+        pv = "yes" if frame.pivot_crossed else "no"
+        print(f"STATE @ seq {frame.seq}:")
+        print(f"  workflow: {frame.workflow_state}   pivot_crossed: {pv}   "
+              f"side-effects: {frame.side_effects}")
+        for sid, st in frame.steps.items():
+            extra = f"  {st['detail']}" if st.get("detail") else ""
+            appr = f"  approval={st['approval']}" if st.get("approval") else ""
+            print(f"  {sid:<10} {st['status']:<12} {st.get('tool', ''):<22}"
+                  f"{appr}{extra}")
+    return 0 if result.chain_valid else 1
 
 
 def cmd_report(args, config: AATMConfig) -> int:
@@ -312,9 +412,32 @@ def build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--run-id", required=True)
     rc.set_defaults(func=cmd_recover)
 
+    rs = sub.add_parser("resume", help="Reconcile a crashed run, then drive the "
+                        "remaining steps forward to completion.")
+    rs.add_argument("workflow")
+    rs.add_argument("--run-id", required=True)
+    rs.add_argument("--report", action="store_true", help="generate evidence report")
+    rs.add_argument("--no-color", action="store_true")
+    rs.add_argument("--deny-pivot", action="store_true")
+    rs.add_argument("--fast", action="store_true", help="zero backoff")
+    rs.set_defaults(func=cmd_resume)
+
+    rd = sub.add_parser("redrive", help="Re-attempt a run's open dead-letter "
+                        "entries (unrecoverable compensations / escalations).")
+    rd.add_argument("--run-id", required=True)
+    rd.set_defaults(func=cmd_redrive)
+
     va = sub.add_parser("verify-audit", help="Verify a run's audit hash chain.")
     va.add_argument("--run-id", required=True)
     va.set_defaults(func=cmd_verify_audit)
+
+    rp = sub.add_parser("replay", help="Deterministically reconstruct a run's "
+                        "state timeline from the audit log (read-only).")
+    rp.add_argument("--run-id", required=True)
+    rp.add_argument("--to-seq", type=int, default=None,
+                    help="reconstruct state as of this audit seq (time-travel)")
+    rp.add_argument("--json", action="store_true", help="emit the timeline as JSON")
+    rp.set_defaults(func=cmd_replay)
 
     rp = sub.add_parser("report", help="Show a run's report summary.")
     rp.add_argument("--run-id", required=True)

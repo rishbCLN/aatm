@@ -31,6 +31,10 @@ class Reversibility(StrEnum):
     FULLY_REVERSIBLE = "fully_reversible"
     COMPENSATABLE = "compensatable"
     IRREVERSIBLE = "irreversible"
+    # Retryable (saga theory): a step that MUST eventually succeed and is driven
+    # FORWARD to completion on failure rather than compensated. Never chosen as a
+    # pivot; after the pivot it is retried forward (never triggers an unwind).
+    RETRYABLE = "retryable"
     # Fail-closed default for tools we cannot classify.
     UNKNOWN = "unknown"
 
@@ -210,6 +214,10 @@ class AuditEvent(StrEnum):
     WORKFLOW_INCONSISTENT = "WORKFLOW_INCONSISTENT"
     CRASH_RECOVERY_START = "CRASH_RECOVERY_START"
     CRASH_RECOVERY_COMPLETE = "CRASH_RECOVERY_COMPLETE"
+    WORKFLOW_RESUMED = "WORKFLOW_RESUMED"
+    STEP_SKIPPED_RESUME = "STEP_SKIPPED_RESUME"
+    REDRIVE_START = "REDRIVE_START"
+    REDRIVE_RESULT = "REDRIVE_RESULT"
     CIRCUIT_OPEN = "CIRCUIT_OPEN"
     CIRCUIT_HALF_OPEN = "CIRCUIT_HALF_OPEN"
     CIRCUIT_CLOSED = "CIRCUIT_CLOSED"
@@ -226,8 +234,12 @@ class ReportStatus(StrEnum):
 
 
 # Mapping from reversibility to the canonical tier used by the planner.
+# RETRYABLE maps to Tier.ONE so it is never a pivot candidate (pivot = first
+# Tier-3) and needs no semantic compensation; its distinct behavior (forward
+# retry) is driven by the coordinator off the reversibility flag, not the tier.
 REVERSIBILITY_TO_TIER = {
     Reversibility.FULLY_REVERSIBLE: Tier.ONE,
     Reversibility.COMPENSATABLE: Tier.TWO,
     Reversibility.IRREVERSIBLE: Tier.THREE,
+    Reversibility.RETRYABLE: Tier.ONE,
 }

@@ -258,7 +258,10 @@ def _analyze_break(nodes, execs, order, pivot_id, pivot_crossed, state, comps,
     }
 
 
-def render_flow_html(report: dict[str, Any]) -> str:
+def render_flow_html(
+    report: dict[str, Any],
+    replay_frames: Optional[list[dict[str, Any]]] = None,
+) -> str:
     model = build_flow_model(report)
     env = Environment(
         loader=FileSystemLoader(str(_TEMPLATES_DIR)),
@@ -267,7 +270,10 @@ def render_flow_html(report: dict[str, Any]) -> str:
     template = env.get_template("flow_view.html")
     # Embed the model as JSON for the client-side interactivity.
     model_json = json.dumps(model, default=str)
-    return template.render(model=model, model_json=model_json)
+    # The deterministic-replay timeline powers the optional time-travel scrubber.
+    replay_json = json.dumps(replay_frames or [], default=str)
+    return template.render(model=model, model_json=model_json,
+                           replay_json=replay_json)
 
 
 class FlowVisualizer:
@@ -277,10 +283,23 @@ class FlowVisualizer:
         self.config = config or default_config
 
     def from_report_dict(self, report: dict[str, Any], run_id: str) -> Path:
-        html = render_flow_html(report)
+        html = render_flow_html(report, replay_frames=self._replay_frames(run_id))
         out = self.flow_path(run_id)
         out.write_text(html, encoding="utf-8")
         return out
+
+    def _replay_frames(self, run_id: str) -> list[dict[str, Any]]:
+        """Best-effort deterministic-replay timeline for the time-travel scrubber.
+
+        Never fatal: if the audit log is missing/unreadable the flow view simply
+        renders without the scrubber.
+        """
+        try:
+            from ..replay import ReplayEngine
+
+            return ReplayEngine(self.config).replay(run_id).to_dict()["frames"]
+        except Exception:  # noqa: BLE001 - scrubber is a progressive enhancement
+            return []
 
     def from_run_id(self, run_id: str) -> Path:
         json_path = self.config.report_json_path(run_id)
