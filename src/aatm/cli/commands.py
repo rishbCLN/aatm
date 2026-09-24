@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import Optional
 
 from ..config import AATMConfig, default_config
@@ -78,6 +79,23 @@ def cmd_plan(args, config: AATMConfig) -> int:
 
 
 def cmd_run(args, config: AATMConfig) -> int:
+    # --seed: threaded into the deterministic paths (recorded in the assurance
+    # manifest) so repeated runs are reproducible for the control plane.
+    seed = int(getattr(args, "seed", 0) or 0)
+    import random
+
+    random.seed(seed)
+
+    # --out / --report-dir: when set, the engine populates that directory. We
+    # redirect the evidence report there and always also emit assurance.json.
+    out_dir: Optional[Path] = None
+    if getattr(args, "out", None):
+        out_dir = Path(args.out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        config = config.model_copy(deep=True)
+        config.reports_dir = out_dir
+        config.ensure_dirs()
+
     engine = AATMEngine(config)
     approval = _approval_policy(args.deny_pivot)
     try:
@@ -104,9 +122,12 @@ def cmd_run(args, config: AATMConfig) -> int:
     print(render_run(output.run, output.plan, use_color=use_color))
     print(f"\nRUN_ID: {output.run.run_id}")
 
-    if args.report:
+    # Generate the evidence report when explicitly requested (--report), when an
+    # output dir is set (--out always writes reports there), or when machine
+    # output is requested (--json needs the report to build the pack).
+    if args.report or out_dir is not None or args.json:
         experiment = {"injection": str(args.inject) if args.inject else None,
-                      "crashed": output.crashed}
+                      "crashed": output.crashed, "seed": seed}
         rep = engine.report(output, experiment=experiment)
         print(f"Report (JSON): {rep['_paths']['json']}")
         print(f"Report (HTML): {rep['_paths']['html']}")
@@ -118,6 +139,18 @@ def cmd_run(args, config: AATMConfig) -> int:
         print(f"Flow (HTML):   {flow_path}")
         print(f"Assessment:    {rep['score']['status']} "
               f"({rep['score']['total']}/100)")
+
+        # Contract v1 assurance pack (shared interface for the control plane).
+        from ..reporting.assurance import build_assurance_pack, write_assurance_pack
+
+        if out_dir is not None:
+            pack_path = write_assurance_pack(
+                rep, out_dir, seed=seed, target_ref=str(args.workflow))
+            print(f"Assurance:     {pack_path}")
+        if args.json:
+            pack = build_assurance_pack(
+                rep, seed=seed, target_ref=str(args.workflow))
+            print(json.dumps(pack, indent=2, default=str))
 
     if output.crashed:
         print("\n[!] Process crash was simulated. Run 'aatm recover --run-id "
@@ -399,8 +432,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     sr = sub.add_parser("run", help="Execute a workflow.")
     sr.add_argument("workflow")
-    sr.add_argument("--inject", default=None, help="failure injection YAML")
+    sr.add_argument("--inject", "--injection", dest="inject", default=None,
+                    help="failure injection YAML (--injection is an alias)")
     sr.add_argument("--report", action="store_true", help="generate evidence report")
+    sr.add_argument("--out", "--report-dir", dest="out", default=None,
+                    metavar="DIR",
+                    help="output directory; always writes the evidence report and "
+                         "<DIR>/assurance.json here (--report-dir is an alias)")
+    sr.add_argument("--seed", type=int, default=0,
+                    help="deterministic seed (recorded in assurance.json)")
+    sr.add_argument("--json", action="store_true",
+                    help="also print the Contract v1 assurance pack to stdout")
     sr.add_argument("--no-color", action="store_true")
     sr.add_argument("--deny-pivot", action="store_true",
                     help="deny approval at the pivot (demo of approval-denied path)")

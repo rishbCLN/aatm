@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Agent Action Transaction Manager - a runtime safety/recovery layer around AI-agent tool calls"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = { text = "Proprietary" }
 authors = [{ name = "AATM Contributors" }]
 keywords = ["agents", "saga", "transactions", "compensation", "reliability"]
 dependencies = [
@@ -23,6 +23,9 @@ dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",
     "hypothesis>=6.90",
+    # Shared Assurance Contract v1 validators/schemas. Installed editable from
+    # ../orch_bench/assurance_contract; used by tests/test_contract_conformance.py.
+    "assurance-contract>=1.0.0,<2.0.0",
 ]
 
 [project.scripts]
@@ -32,7 +35,7 @@ aatm = "aatm.cli.commands:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-aatm = ["reporting/templates/*.html"]
+aatm = ["reporting/templates/*.html", "py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
