@@ -41,20 +41,31 @@ _VALID_SEVERITIES = ("critical", "high", "medium", "low", "info")
 DISCLAIMER = "engineering signal, not a legal certification"
 
 
-def _canonical_report_json(report: dict[str, Any]) -> str:
-    """Canonical JSON of the on-disk report (excludes the runtime-only ``_paths``).
-
-    ``_paths`` is attached AFTER the native report JSON is written to disk (it
-    holds absolute, machine-specific paths), so it is not part of the canonical
-    report content that the hash covers.
-    """
-    hashable = {k: v for k, v in report.items() if k != "_paths"}
-    return json.dumps(hashable, sort_keys=True, default=str, separators=(",", ":"))
-
-
 def _content_hash(report: dict[str, Any]) -> str:
-    digest = hashlib.sha256(_canonical_report_json(report).encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
+    """STABLE sha256 over the seed-deterministic verdict content (Contract v1 §2.2).
+
+    Excludes wall-clock provenance (``meta.generated_at`` and any per-step timing
+    under ``result``) so two runs of the same workflow + seed reproduce an
+    identical hash for regression + audit comparison. Hashing the whole native
+    report previously folded ``generated_at`` (and other timing) into the digest
+    and broke cross-run reproducibility.
+    """
+    score = report.get("score") or {}
+    audit_chain = report.get("audit_chain") or {}
+    result = report.get("result") or {}
+    dead_letters = report.get("dead_letters") or []
+    payload = {
+        "engine": ENGINE,
+        "contract_version": CONTRACT_VERSION,
+        "score_total": score.get("total"),
+        "score_status": str(score.get("status") or ""),
+        "floor_violations": sorted(str(v) for v in (score.get("floor_violations") or [])),
+        "audit_chain_valid": bool(audit_chain.get("valid", False)),
+        "consistent": result.get("consistent"),
+        "dead_letters": len(dead_letters),
+    }
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return f"sha256:{hashlib.sha256(blob.encode('utf-8')).hexdigest()}"
 
 
 def _created_at(report: dict[str, Any]) -> str:
